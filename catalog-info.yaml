@@ -1,0 +1,11 @@
+# BEGIN TERRAFORM MANAGED BLOCK
+"apiVersion": "backstage.io/v1alpha1"
+"kind": "Location"
+"metadata":
+  "annotations":
+    "github.com/project-slug": "LiveRamp/logscale-mcp"
+  "description": "Security Engineering | Model Context Protocol (MCP) server for CrowdStrike
+    LogScale"
+  "name": "logscale-mcp"
+  "tags": []
+# END TERRAFORM MANAGED BLOCK
