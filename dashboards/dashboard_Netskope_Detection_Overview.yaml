@@ -1,0 +1,58 @@
+name: Netskope Detection Overview
+timeSelector: {}
+sharedTimeInterval:
+  enabled: false
+  isLive: false
+  start: 1d
+filters:
+  HhcaberX37RsLuOioKDk9iOwbOjXgSvO:
+    queryPrefix: '@event_parsed!="false"'
+    title: Clean
+widgets:
+  62e586b0-2740-4bd7-a97d-edc2a7a21cea:
+    x: 0
+    y: 0
+    height: 8
+    queryString: |-
+      #type=netskope_api action="anomaly_detection"
+      | table([@timestamp, alert_name, scenario, sub_scenario, user, srcip, app, activity, severity, score])
+    visualization: table-view
+    end: now
+    start: 24h
+    width: 8
+    title: Recent Anomaly Detections
+    isLive: true
+    type: query
+  6931c662-a566-44e9-8970-215d789fce4d:
+    x: 8
+    y: 0
+    height: 8
+    queryString: |-
+      #type=netskope_api action="anomaly_detection"
+      | groupBy(field=scenario, function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: pie-chart
+    end: now
+    start: 24h
+    width: 4
+    title: Top Detection Scenarios
+    isLive: true
+    type: query
+  a042f086-0e78-42f8-acee-9200e654e93a:
+    x: 0
+    y: 8
+    height: 7
+    queryString: |-
+      #type=netskope_api action="anomaly_detection"
+      | timechart(function={groupBy(field=scenario, function=count())}, span=1h, limit=5)
+    end: now
+    start: 24h
+    width: 12
+    options:
+      connect-points: false
+    visualization: time-chart
+    title: Detection Scenario Timeline
+    isLive: true
+    type: query
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+defaultFilterId: HhcaberX37RsLuOioKDk9iOwbOjXgSvO

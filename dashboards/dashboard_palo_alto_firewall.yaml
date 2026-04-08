@@ -1,0 +1,518 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: Palo Alto Firewall - Network Security
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+parameters:
+  source_ip:
+    label: Source IP
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  destination_ip:
+    label: Destination IP
+    order: 2
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  action:
+    label: Action
+    order: 3
+    type: list
+    values:
+    - '*'
+    - allow
+    - deny
+    - drop
+    - reset
+    defaultValue: '*'
+    width: 2
+    
+  user:
+    label: User
+    order: 4
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  application:
+    label: Application
+    order: 5
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  country:
+    label: Source Country
+    order: 6
+    type: text
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  # Summary Statistics
+  total-events:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Total Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  allowed-traffic:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=paloalto_firewall
+      | Vendor.action="allow"
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Allowed Traffic
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  blocked-traffic:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=paloalto_firewall
+      | Vendor.action=deny OR Vendor.action=drop OR Vendor.action=reset
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Blocked/Denied Traffic
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  unique-users:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | Vendor.source_user=*
+      | groupBy(field="Vendor.source_user", function=count())
+      | count()
+    visualization: single-value
+    title: Unique Users
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Traffic Timeline
+  traffic-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | timechart(span=1h, series="Vendor.action")
+    visualization: time-chart
+    title: Traffic Timeline (Hourly by Action)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Blocked Threats
+  blocked-threats:
+    x: 0
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | Vendor.action=deny OR Vendor.action=drop OR Vendor.action=reset
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy([Vendor.application, Vendor.action], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Blocked Applications/Threats
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Top Applications
+  top-applications:
+    x: 6
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field=Vendor.application, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Applications by Traffic Volume
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Geographic Analysis
+  traffic-by-country:
+    x: 0
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | "Vendor.source_country"=*
+      | "Vendor.source_country"!="10.0.0.0-10.255.255.255"
+      | groupBy(field="Vendor.source_country", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Traffic by Source Country (Top 20)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Geographic Map
+  geographic-map:
+    x: 6
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | source.ip=*
+      | worldMap(ip=source.ip)
+    visualization: world-map
+    title: Traffic Geographic Distribution
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      mapType: world
+      aggregateFunction: count
+  
+  # Top Source IPs
+  top-source-ips:
+    x: 0
+    y: 21
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field=source.ip, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Source IPs (Traffic Volume)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Top Destination IPs
+  top-destination-ips:
+    x: 6
+    y: 21
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field=destination.ip, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Destination IPs (Traffic Volume)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Top Users
+  top-users:
+    x: 0
+    y: 26
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | Vendor.source_user=*
+      | groupBy(field="Vendor.source_user", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Active Users (by Traffic)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Policy/Rule Analysis
+  top-rules-triggered:
+    x: 6
+    y: 26
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field="Vendor.rule_name", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Most Triggered Firewall Rules
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Port Analysis
+  top-destination-ports:
+    x: 0
+    y: 31
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field=destination.port, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Destination Ports
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Protocol Analysis
+  traffic-by-protocol:
+    x: 6
+    y: 31
+    height: 5
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | groupBy(field=Vendor.protocol, function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: pie-chart
+    title: Traffic by Protocol
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Bandwidth Analysis
+  bandwidth-timeline:
+    x: 0
+    y: 36
+    height: 6
+    width: 12
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | eval(bytes=Vendor.bytes)
+      | timechart(span=1h, function=[sum(bytes)])
+    visualization: time-chart
+    title: Bandwidth Usage Timeline (Bytes)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Security - High Risk Applications
+  high-risk-apps:
+    x: 0
+    y: 42
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | Vendor.application_risk>=4
+      | groupBy([Vendor.application, Vendor.application_risk], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: High Risk Applications (Risk >= 4)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+      
+  # Applications with Known Vulnerabilities
+  vulnerable-apps:
+    x: 6
+    y: 42
+    height: 6
+    width: 6
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | Vendor.application_characteristic=*vulnerability*
+      | groupBy([Vendor.application, Vendor.application_characteristic], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: Applications with Known Vulnerabilities
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Detailed Traffic Log
+  recent-traffic:
+    x: 0
+    y: 48
+    height: 10
+    width: 12
+    queryString: |-
+      #type=paloalto_firewall
+      | source.ip=?{source_ip=*}
+      | destination.ip=?{destination_ip=*}
+      | Vendor.action=?{action=*}
+      | Vendor.source_user=*?{user=*}*
+      | Vendor.application=*?{application=*}*
+      | "Vendor.source_country"=*?{country=*}*
+      | table([@timestamp, "Vendor.action", source.ip, destination.ip, destination.port, 
+              "Vendor.application", "Vendor.source_user", "Vendor.rule_name", 
+              "Vendor.source_country", "Vendor.bytes"])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="Vendor.action", as="Action")
+      | rename(field="source.ip", as="Source IP")
+      | rename(field="destination.ip", as="Dest IP")
+      | rename(field="destination.port", as="Port")
+      | rename(field="Vendor.application", as="Application")
+      | rename(field="Vendor.source_user", as="User")
+      | rename(field="Vendor.rule_name", as="Rule")
+      | rename(field="Vendor.source_country", as="Country")
+      | rename(field="Vendor.bytes", as="Bytes")
+    visualization: table-view
+    title: Recent Traffic Events (Last 100)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false

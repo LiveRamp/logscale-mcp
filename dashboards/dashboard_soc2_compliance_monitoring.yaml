@@ -1,0 +1,306 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: SOC 2 - Daily Log Review (Raw Logs)
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+parameters:
+  review_date:
+    label: Review Date
+    order: 1
+    type: text
+    defaultValue: 'Today'
+    width: 2
+
+widgets:
+  # Summary Counts for Daily Review
+  events-logged-today:
+    x: 0
+    y: 0
+    height: 2
+    width: 4
+    queryString: |-
+      *
+      | count()
+    visualization: single-value
+    title: Total Events Logged (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  failed-auths-today:
+    x: 4
+    y: 0
+    height: 2
+    width: 4
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | outcome.result="FAILURE"
+      | count()
+    visualization: single-value
+    title: Failed Authentications (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  admin-actions-today:
+    x: 8
+    y: 0
+    height: 2
+    width: 4
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | eventType=/.*admin.*/ OR eventType=/.*policy.*/
+      | count()
+    visualization: single-value
+    title: Admin Actions (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # TABLE 1: Daily Failed Login Review (MUST REVIEW DAILY)
+  daily-failed-logins:
+    x: 0
+    y: 2
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | outcome.result="FAILURE"
+      | table([@timestamp, "actor.alternateId", eventType, "outcome.reason", 
+              "client.ipAddress", "client.geographicalContext.country", 
+              "client.geographicalContext.city", "target.alternateId"])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="eventType", as="Event Type")
+      | rename(field="outcome.reason", as="Failure Reason")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.geographicalContext.city", as="City")
+      | rename(field="target.alternateId", as="Target")
+    visualization: table-view
+    title: "DAILY REVIEW REQUIRED: Failed Login Attempts (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 2: Daily Admin Activity Review (MUST REVIEW DAILY)
+  daily-admin-actions:
+    x: 0
+    y: 14
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | eventType=/.*admin.*/ OR eventType=/.*policy.*/ OR eventType=/.*role.*/
+      | table([@timestamp, "actor.alternateId", eventType, "target.alternateId", 
+              "target.displayName", outcome.result, "client.ipAddress", debugContext.debugData.requestUri])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="actor.alternateId", as="Admin User")
+      | rename(field="eventType", as="Admin Action")
+      | rename(field="target.alternateId", as="Target User")
+      | rename(field="target.displayName", as="Target Resource")
+      | rename(field="outcome.result", as="Result")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="debugContext.debugData.requestUri", as="API Endpoint")
+    visualization: table-view
+    title: "DAILY REVIEW REQUIRED: Admin Activity Log (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 3: Users with Multiple Failed Logins (Investigation Required)
+  users-multiple-failures:
+    x: 0
+    y: 26
+    height: 10
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | outcome.result="FAILURE"
+      | "actor.alternateId"=*
+      | groupBy(["actor.alternateId", "client.ipAddress", "client.geographicalContext.country"], function=count())
+      | _count >= 5
+      | sort(_count, order=desc, limit=100)
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="_count", as="Failed Attempts")
+    visualization: table-view
+    title: "INVESTIGATE: Users with 5+ Failed Logins (Action Required)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 4: Unauthorized Access Attempts (Investigation Required)
+  unauthorized-access-attempts:
+    x: 0
+    y: 36
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | eventType="app.generic.unauth_app_access_attempt"
+      | table([@timestamp, "actor.alternateId", "target.displayName", 
+              "client.ipAddress", "client.geographicalContext.country", 
+              "client.geographicalContext.city", "client.userAgent.rawUserAgent"])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="target.displayName", as="Application Attempted")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.geographicalContext.city", as="City")
+      | rename(field="client.userAgent.rawUserAgent", as="User Agent")
+    visualization: table-view
+    title: "INVESTIGATE: Unauthorized Application Access Attempts (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 5: Configuration Changes (Review Required)
+  daily-config-changes:
+    x: 0
+    y: 48
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer eventType=/.*policy.*/ OR eventType=/.*config.*/ OR eventType=/.*rule.*/)
+      OR (#type=github_audit action=/.*config.*/ OR action=/.*setting.*/)
+      | table([@timestamp, #type, eventType, action, "actor.alternateId", user, 
+              "target.displayName", outcome.result, "client.ipAddress"])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="#type", as="Log Source")
+      | rename(field="eventType", as="Change Type")
+      | rename(field="action", as="Action")
+      | rename(field="actor.alternateId", as="User (Okta)")
+      | rename(field="user", as="User (GitHub)")
+      | rename(field="target.displayName", as="Target Resource")
+      | rename(field="outcome.result", as="Result")
+      | rename(field="client.ipAddress", as="Source IP")
+    visualization: table-view
+    title: "REVIEW REQUIRED: Configuration Changes Today (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 6: External File Shares (DLP Review)
+  daily-external-shares:
+    x: 0
+    y: 60
+    height: 12
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | table([@timestamp, drive.owner, drive.target_user, drive.doc_title, 
+              drive.doc_type, drive.doc_id, drive.old_visibility])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="drive.owner", as="File Owner")
+      | rename(field="drive.target_user", as="Shared With")
+      | rename(field="drive.doc_title", as="Document")
+      | rename(field="drive.doc_type", as="File Type")
+      | rename(field="drive.doc_id", as="Document ID")
+      | rename(field="drive.old_visibility", as="Previous Visibility")
+    visualization: table-view
+    title: "DLP REVIEW: External File Shares Today (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 7: Security Alerts (Immediate Review)
+  daily-security-alerts:
+    x: 0
+    y: 72
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=netskope_api action="alert" OR action="useralert")
+      OR (#type=proofpoint_tap event_type="messagesBlocked")
+      | table([@timestamp, #type, action, event_type, alert, user, "ns.cs-username", 
+              srcip, threat, malwareScore, phishScore, app, policy])
+      | sort(@timestamp, order=desc, limit=200)
+      | rename(field="#type", as="Alert Source")
+      | rename(field="action", as="Alert Type")
+      | rename(field="event_type", as="Event")
+      | rename(field="alert", as="Alert Name")
+      | rename(field="user", as="User")
+      | rename(field="ns.cs-username", as="Username")
+      | rename(field="srcip", as="Source IP")
+      | rename(field="threat", as="Threat")
+      | rename(field="malwareScore", as="Malware Score")
+      | rename(field="phishScore", as="Phish Score")
+      | rename(field="app", as="Application")
+      | rename(field="policy", as="Policy")
+    visualization: table-view
+    title: "IMMEDIATE REVIEW: Security Alerts Today (Last 200)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # TABLE 8: All Authentication Events (Complete Log)
+  all-auth-events:
+    x: 0
+    y: 84
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | eventType=* 
+      | table([@timestamp, eventType, "actor.alternateId", outcome.result, 
+              "client.ipAddress", "client.geographicalContext.country", "target.alternateId"])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="eventType", as="Event Type")
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="outcome.result", as="Result")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="target.alternateId", as="Target")
+    visualization: table-view
+    title: "Complete Authentication Log (All Events - Last 500)"
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true

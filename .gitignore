@@ -1,0 +1,35 @@
+# Security: Never commit credentials
+.env
+
+# Dependencies
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Cursor/MCP specific
+cursor-config.json  # Project-specific config (may contain paths)
+# Cached CQL docs
+docs/cql/
+

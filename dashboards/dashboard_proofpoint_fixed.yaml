@@ -1,0 +1,254 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: Proofpoint Email Security (Fixed)
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+parameters:
+  recipient:
+    label: Recipient
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  sender:
+    label: Sender
+    order: 2
+    type: text
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  total-tap-events:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=proofpoint_tap
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | count()
+    visualization: single-value
+    title: Total Threat Events (TAP)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  total-email-processed:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=proofpoint_ondemand
+      | "envelope.rcpts[0]"=*?{recipient=*}* OR "filter.verified.rcpts[0]"=*?{recipient=*}*
+      | "envelope.from"=*?{sender=*}*
+      | count()
+    visualization: single-value
+    title: Total Emails Processed (OnDemand)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  blocked-messages:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=proofpoint_tap
+      | event_type="messagesBlocked"
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | count()
+    visualization: single-value
+    title: Blocked Messages
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  phishing-detected:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=proofpoint_tap
+      | "threatsInfoMap[0].classification"="phish"
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | count()
+    visualization: single-value
+    title: Phishing Attempts
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  threat-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=proofpoint_tap
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | timechart(span=1h, series="threatsInfoMap[0].classification")
+    visualization: time-chart
+    title: Email Threats Timeline (TAP)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  top-targeted-users:
+    x: 0
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | event_type="messagesBlocked"
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field="recipient[0]", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Targeted Users
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  top-malicious-senders:
+    x: 6
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | event_type="messagesBlocked"
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field=sender, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Top Malicious Senders
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  threat-classification:
+    x: 0
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field="threatsInfoMap[0].classification", function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Threat Classification
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  threat-types:
+    x: 6
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field="threatsInfoMap[0].threatType", function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Threat Type (URL/Attachment)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  quarantine-folders:
+    x: 0
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | quarantineFolder=*
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field=quarantineFolder, function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Quarantine Folder Distribution
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  top-threat-urls:
+    x: 6
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=proofpoint_tap
+      | "threatsInfoMap[0].threat"=*
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | groupBy(field="threatsInfoMap[0].threat", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Malicious URLs/Threats
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  recent-blocked-threats:
+    x: 0
+    y: 27
+    height: 10
+    width: 12
+    queryString: |-
+      #type=proofpoint_tap
+      | event_type="messagesBlocked"
+      | "recipient[0]"=*?{recipient=*}*
+      | sender=*?{sender=*}*
+      | table([@timestamp, "recipient[0]", sender, subject, 
+              "threatsInfoMap[0].classification", "threatsInfoMap[0].threatType", 
+              phishScore, malwareScore, quarantineFolder])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="recipient[0]", as="Recipient")
+      | rename(field="sender", as="Sender")
+      | rename(field="subject", as="Subject")
+      | rename(field="threatsInfoMap[0].classification", as="Classification")
+      | rename(field="threatsInfoMap[0].threatType", as="Threat Type")
+      | rename(field="phishScore", as="Phish Score")
+      | rename(field="malwareScore", as="Malware Score")
+      | rename(field="quarantineFolder", as="Quarantine")
+    visualization: table-view
+    title: Recent Blocked Email Threats (Last 100)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false

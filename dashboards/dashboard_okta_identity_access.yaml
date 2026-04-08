@@ -1,0 +1,548 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: Okta Identity & Access Management
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+parameters:
+  user:
+    label: User (Email)
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  event_type:
+    label: Event Type
+    order: 2
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  outcome:
+    label: Outcome
+    order: 3
+    type: list
+    values:
+    - '*'
+    - SUCCESS
+    - FAILURE
+    - CHALLENGE
+    - ALLOW
+    - DENY
+    defaultValue: '*'
+    width: 2
+    
+  ip_address:
+    label: IP Address
+    order: 4
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  country:
+    label: Country
+    order: 5
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  risk_level:
+    label: Risk Level
+    order: 6
+    type: list
+    values:
+    - '*'
+    - LOW
+    - MEDIUM
+    - HIGH
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  # Summary Statistics
+  total-auth-events:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Total Authentication Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  successful-logins:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=user.session.start OR eventType=user.authentication.sso
+      | "outcome.result"=SUCCESS
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Successful Logins
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  failed-logins:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=user.session.start OR eventType=user.authentication.auth_via_mfa
+      | "outcome.result"=FAILURE
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | count()
+    visualization: single-value
+    title: Failed Login Attempts
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  unique-users:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="actor.alternateId", function=count())
+      | count()
+    visualization: single-value
+    title: Unique Users
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Authentication Timeline
+  auth-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | timechart(span=1h, series="outcome.result")
+    visualization: time-chart
+    title: Authentication Activity Timeline (Hourly)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Failed Login Analysis
+  failed-logins-by-user:
+    x: 0
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "outcome.result"=FAILURE
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="actor.alternateId", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Failed Logins by User (Top 20)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  failed-logins-by-ip:
+    x: 6
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "outcome.result"=FAILURE
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="client.ipAddress", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Failed Logins by IP Address (Top 20)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # MFA Analysis
+  mfa-events:
+    x: 0
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=*mfa* OR eventType=*factor*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy([eventType, "outcome.result"], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: MFA Activity by Event Type
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+      
+  mfa-timeline:
+    x: 6
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=*mfa* OR eventType=*factor*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | timechart(span=1h, series="outcome.result")
+    visualization: time-chart
+    title: MFA Activity Timeline
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Geographic Analysis
+  logins-by-country:
+    x: 0
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=user.session.start OR eventType=user.authentication.sso
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | "client.geographicalContext.country"=*
+      | groupBy(field="client.geographicalContext.country", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Logins by Country (Top 20)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  geographic-map:
+    x: 6
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=user.session.start OR eventType=user.authentication.sso
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | "client.ipAddress"=*
+      | worldMap(ip="client.ipAddress")
+    visualization: world-map
+    title: Login Geographic Distribution
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      mapType: world
+      aggregateFunction: count
+  
+  # Security Risk Analysis
+  high-risk-logins:
+    x: 0
+    y: 27
+    height: 6
+    width: 12
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "debugContext.debugData.risk"=*HIGH* OR "debugContext.debugData.logOnlySecurityData"=*HIGH*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | table([@timestamp, "actor.alternateId", eventType, "outcome.result", 
+              "client.ipAddress", "client.geographicalContext.country", 
+              "client.geographicalContext.city", "debugContext.debugData.risk"])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="eventType", as="Event")
+      | rename(field="outcome.result", as="Outcome")
+      | rename(field="client.ipAddress", as="IP Address")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.geographicalContext.city", as="City")
+      | rename(field="debugContext.debugData.risk", as="Risk")
+    visualization: table-view
+    title: High Risk Authentication Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Suspicious Activity - New IPs
+  new-ip-logins:
+    x: 0
+    y: 33
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "debugContext.debugData.behaviors"=*"New IP":*POSITIVE* OR "debugContext.debugData.logOnlySecurityData"=*"New IP":"POSITIVE"*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="actor.alternateId", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Users with New IP Logins
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Suspicious Activity - New Devices
+  new-device-logins:
+    x: 6
+    y: 33
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "debugContext.debugData.behaviors"=*"New Device":*POSITIVE* OR "debugContext.debugData.logOnlySecurityData"=*"New Device":"POSITIVE"*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="actor.alternateId", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Users with New Device Logins
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Application Access
+  top-apps-accessed:
+    x: 0
+    y: 39
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=*app* OR eventType=*application*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field=eventType, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Application Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Admin Activity
+  admin-actions:
+    x: 6
+    y: 39
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=*admin* OR eventType=user.lifecycle.create OR eventType=user.lifecycle.delete OR eventType=*policy*
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy([eventType, "actor.alternateId"], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: Administrative Actions
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Password & Account Management
+  password-events:
+    x: 0
+    y: 45
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | eventType=*password* OR eventType=user.account.lock OR eventType=user.account.unlock
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy([eventType, "outcome.result"], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: Password & Account Lock Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+      
+  # Most Active Users
+  most-active-users:
+    x: 6
+    y: 45
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field="actor.alternateId", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Active Users (All Events)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Event Type Breakdown
+  event-type-distribution:
+    x: 0
+    y: 51
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(field=eventType, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: pie-chart
+    title: Event Type Distribution (Top 15)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Browser/OS Analysis
+  browser-os-stats:
+    x: 6
+    y: 51
+    height: 6
+    width: 6
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | groupBy(["client.userAgent.browser", "client.userAgent.os"], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: Browser & OS Usage
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Recent Activity Log
+  recent-activity:
+    x: 0
+    y: 57
+    height: 10
+    width: 12
+    queryString: |-
+      #type=okta_customer OR #type=okta_corp
+      | "actor.alternateId"=*?{user=*}*
+      | eventType=*?{event_type=*}*
+      | "outcome.result"=?{outcome=*}
+      | "client.ipAddress"=*?{ip_address=*}*
+      | "client.geographicalContext.country"=*?{country=*}*
+      | table([@timestamp, "actor.alternateId", eventType, "outcome.result", 
+              "client.ipAddress", "client.geographicalContext.country", 
+              "client.geographicalContext.city", "client.userAgent.browser", 
+              "client.userAgent.os", displayMessage])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="eventType", as="Event Type")
+      | rename(field="outcome.result", as="Outcome")
+      | rename(field="client.ipAddress", as="IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.geographicalContext.city", as="City")
+      | rename(field="client.userAgent.browser", as="Browser")
+      | rename(field="client.userAgent.os", as="OS")
+      | rename(field="displayMessage", as="Message")
+    visualization: table-view
+    title: Recent Activity (Last 100 Events)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false

@@ -1,0 +1,101 @@
+# CUSTOMIZE: Update #repo, principalEmail domain, lookup file names, and actionNameReferences for your environment
+name: prod_risky_gcloud_commands
+description: 'Detects all risky gcloud commands from both AI agents and manual CLI usage.
+  Classifies risk from CRITICAL (project deletion) to MED (service deployment). Tracks
+  source (AI Agent vs Manual CLI) and cross-references with GCP audit logs.'
+maxWaitTimeSeconds: 120
+enabled: false
+queryTimestampType: ingest-timestamp
+actionNameReferences:
+- Send to Tines
+schedule: 0 * * * *
+searchIntervalSeconds: 3600
+$schema: https://schemas.humio.com/scheduledsearch/v0.3.0
+timeZone: UTC
+triggerOnEmptyResult: false
+queryString: |-
+  #repo=fltr-crowdstrike_data
+  | #event_simpleName=ProcessRollup2
+  | CommandLine=/gcloud\s/i
+  | CommandLine != /SNAPSHOT_FILE=|typeset -f|alias.*sed|setopt.*head|--ripgrep/
+  | CommandLine != /config view|config current-context|config get-contexts|api-versions|cluster-info|completion|version|which kubectl|get crd|gke-gcloud-auth-plugin|metrics_reporter/i
+  | case {
+      ParentBaseFileName="cursorsandbox" | source := "AI Agent" | agent := "Cursor Agent";
+      CommandLine=/cursorsandbox\s+--sandbox-policy/ | source := "AI Agent" | agent := "Cursor Agent";
+      ParentBaseFileName="claude" | source := "AI Agent" | agent := "Claude Code";
+      CommandLine=/\.claude\/shell-snapshots/ | source := "AI Agent" | agent := "Claude Code";
+      ParentBaseFileName=/codex-/i | source := "AI Agent" | agent := "OpenAI Codex CLI";
+      CommandLine=/\.codex\// | source := "AI Agent" | agent := "OpenAI Codex CLI";
+      ParentBaseFileName=/kubernetes-mcp-server/i | source := "AI Agent" | agent := "K8s MCP Server";
+      CommandLine=/gcloud-mcp/ | source := "AI Agent" | agent := "GCloud MCP Server";
+      * | source := "Manual CLI" | agent := "Terminal";
+    }
+  | case {
+      CommandLine=/gcloud\s+projects\s+delete\b/i | risk := "CRITICAL";
+      CommandLine=/gcloud\b.*\binstances\s+delete\b|gcloud\b.*\bdisks\s+delete\b|gcloud\b.*\bfirewall-rules\s+delete\b/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\bstorage\s+rm\b/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\bsql\s+instances\s+delete\b/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\bcontainer\s+clusters\s+(delete|update|resize)\b/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\bcompute\s+(networks|subnets)\s+(create|delete)\b/i | risk := "HIGH";
+      CommandLine=/add-iam-policy-binding|set-iam-policy\s|remove-iam-policy-binding/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\bauth\s+print-access-token\b/i | risk := "HIGH";
+      CommandLine=/gcloud\b.*\blogging\s+sinks\s+(create|delete)\b/i | risk := "HIGH";
+      CommandLine=/\bssh\s|\bscp\s|tunnel-through-iap/i | risk := "HIGH";
+      CommandLine=/gcloud\s+secrets\s+(create|delete|versions\s+add)/i | risk := "MED";
+      CommandLine=/builds\s+submit|functions\s+deploy|run\s+deploy/i | risk := "MED";
+      CommandLine=/gcloud\b.*\bcompute\s+instances\s+create\b/i | risk := "MED";
+      CommandLine=/gcloud\b.*\bservices\s+(enable|disable)\b/i | risk := "MED";
+      CommandLine=/gcloud\b.*\bsql\s+instances\s+create\b/i | risk := "MED";
+      * | risk := "INFO";
+    }
+  | risk != "INFO"
+  | format(format="%s", field=[CommandLine], as=cmd)
+  | regex("COMMAND_EXIT_CODE.*?--\s+(?<cmd>.+)", field=CommandLine, strict=false)
+  | regex("(?<gcloud_cmd>gcloud\s+[^|;&<>'\"\\\\()]+)", field=cmd, strict=false)
+  | default(field=gcloud_cmd, value=cmd)
+  | regex("--project[=\s]+(?<gcp_project>[a-z][a-z0-9-]+)", field=cmd, strict=false)
+  | default(field=gcp_project, value="n/a")
+  | format("%s@liveramp.com", field=[UserName], as=cs_email)
+  | match(file="allusers_lookup.csv", field=cs_email, column=username, include=[email], strict=false)
+  | lower(email, as=gcp_email)
+  | default(field=gcp_email, value="unknown")
+  | join(
+      {
+        #repo=gcp_cloudaudit
+        | protoPayload.serviceName=/compute|iam\.googleapis|secretmanager|container\.googleapis|storage|cloudbuild|cloudfunctions|run\.googleapis/i
+        | protoPayload.methodName!=/Get|List|get|list/
+        | protoPayload.authenticationInfo.principalEmail=*@liveramp.com
+        | lower(protoPayload.authenticationInfo.principalEmail, as=gcp_email)
+        | rename(field=protoPayload.methodName, as=gcp_method)
+        | rename(field=protoPayload.serviceName, as=gcp_service)
+        | rename(field=resource.labels.project_id, as=audit_project)
+      },
+      field=[gcp_email], key=[gcp_email], include=[gcp_method, gcp_service, audit_project], mode=left
+    )
+  | default(field=gcp_method, value="n/a")
+  | default(field=gcp_service, value="n/a")
+  | default(field=audit_project, value="n/a")
+  | case { gcp_method!="n/a" | audit_match := "YES"; * | audit_match := "NO"; }
+  | project_name := gcp_project
+  | case {
+      gcp_project!="n/a" | match(file="gcp_sensitive_projects.csv", field=gcp_project, column="additionalAttributes.projectId", include=["labels.env", "labels.team", "labels.compl", "labels.platoon", "displayName"], strict=false) ;
+      audit_project!="n/a" | match(file="gcp_sensitive_projects.csv", field=audit_project, column="additionalAttributes.projectId", include=["labels.env", "labels.team", "labels.compl", "labels.platoon", "displayName"], strict=false) ;
+      * | * ;
+    }
+  | case { displayName!="" | project_name := displayName; * | * ; }
+  | rename(field="labels.env", as="env")
+  | rename(field="labels.team", as="team")
+  | rename(field="labels.compl", as="compliance")
+  | rename(field="labels.platoon", as="platoon")
+  | default(field=env, value="no-label")
+  | default(field=team, value="no-label")
+  | default(field=compliance, value="no-label")
+  | default(field=platoon, value="no-label")
+  | groupBy([audit_match, source, env, compliance, risk, UserName, gcp_email, agent, team, platoon, gcp_project, project_name, gcp_service, audit_project, gcp_method], function=[count(), collect(gcloud_cmd, limit=3), min(@timestamp, as=first_seen), max(@timestamp, as=last_seen)])
+  | _count > 0
+  | formatTime("%Y-%m-%d %H:%M UTC", field=first_seen, as=first_seen_ts, timezone="UTC")
+  | formatTime("%Y-%m-%d %H:%M UTC", field=last_seen, as=last_seen_ts, timezone="UTC")
+  | drop([first_seen, last_seen])
+  | rename(field=first_seen_ts, as=first_seen)
+  | rename(field=last_seen_ts, as=last_seen)
+  | sort(order=desc, field=[audit_match, source, risk, last_seen], limit=200)

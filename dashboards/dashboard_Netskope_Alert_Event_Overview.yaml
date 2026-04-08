@@ -1,0 +1,95 @@
+name: Netskope Alert Event Overview
+timeSelector: {}
+sharedTimeInterval:
+  enabled: false
+  isLive: false
+  start: 1d
+filters:
+  Sua9X7lmh9hvABEI0btubFScGnEuC1fr:
+    queryPrefix: '@event_parsed!="false"'
+    title: Clean
+widgets:
+  2b4a082f-7a9e-4996-8f75-7b1f21a7c9b2:
+    x: 10
+    y: 7
+    height: 5
+    queryString: |
+      #type=netskope_api (action="useralert" OR action="alert")
+      | groupBy(field=policy, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    end: now
+    start: 24h
+    width: 2
+    title: Top Policy Hits
+    isLive: true
+    type: query
+  e75ddfe7-aafa-4e60-ba7d-ecea93170a75:
+    x: 0
+    y: 7
+    height: 5
+    queryString: |-
+      #type=netskope_api (action="useralert" OR action="alert")
+      | table([@timestamp, user, hostname, srcip, dstip, policy, app, alert_name])
+    visualization: table-view
+    end: now
+    start: 24h
+    width: 8
+    title: Recent Alerts
+    isLive: true
+    type: query
+  e4b25734-8b6c-422b-a173-50b191a65d34:
+    x: 8
+    y: 7
+    height: 5
+    queryString: |-
+      #type=netskope_api (action="useralert" OR action="alert")
+      | groupBy(field=user, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    end: now
+    start: 24h
+    width: 2
+    title: Users with Most Alerts
+    isLive: true
+    type: query
+  e1623823-24f9-42fc-bea2-efca38f0f965:
+    x: 0
+    y: 0
+    height: 7
+    queryString: |-
+      #type=netskope_api (action="useralert" OR action="alert")
+      | groupBy(field=app, function=count())
+      | sort(_count, order=desc, limit=10)
+    end: now
+    start: 24h
+    width: 6
+    options:
+      orderBy: _count
+    visualization: bar-chart
+    title: Top 10 Applications Triggering Alerts
+    isLive: true
+    type: query
+  75f33e75-b0ba-44b0-8a18-56201c43574b:
+    x: 6
+    y: 0
+    height: 7
+    queryString: |-
+      #type=netskope_api (action="useralert" OR action="alert")
+      | groupBy(field=alert_type, function=count())
+      | sort(_count, order=desc, limit=10)
+    end: now
+    start: 24h
+    width: 6
+    options:
+      series: {}
+      categoryPadding: 0.11
+      seriesPadding: 0.07
+      orderBy: _count
+      paddingBottom: 105
+    visualization: bar-chart
+    title: Top Alert Types
+    isLive: true
+    type: query
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+defaultFilterId: Sua9X7lmh9hvABEI0btubFScGnEuC1fr

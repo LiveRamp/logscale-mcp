@@ -1,0 +1,107 @@
+# CUSTOMIZE: Update #repo, principalEmail domain, lookup file names, and actionNameReferences for your environment
+name: prod_ai_agent_k8s_gcp_audit
+description: 'Detects AI agent kubectl commands (exec, run, delete, create, etc.) from
+  CrowdStrike endpoint telemetry, enriched with GCP audit data and project metadata.
+  Correlates by pod name to identify confirmed cloud-side activity, with risk classification
+  and environment tagging.'
+maxWaitTimeSeconds: 120
+enabled: false
+queryTimestampType: ingest-timestamp
+actionNameReferences:
+- Send to Tines
+schedule: 0 * * * *
+searchIntervalSeconds: 3600
+$schema: https://schemas.humio.com/scheduledsearch/v0.3.0
+timeZone: UTC
+triggerOnEmptyResult: false
+queryString: |-
+  #repo=fltr-crowdstrike_data
+  | #event_simpleName=ProcessRollup2
+  | CommandLine=/kubectl\s+(exec|run|delete|create|apply|patch|replace|scale|drain|cordon|taint|rollout|label|annotate|expose|set|edit)\s/i
+  | (
+      ParentBaseFileName="cursorsandbox"
+      OR ParentBaseFileName="claude"
+      OR ParentBaseFileName=/codex-/i
+      OR CommandLine=/cursorsandbox\s+--sandbox-policy/
+      OR CommandLine=/\.claude\/shell-snapshots/
+      OR CommandLine=/\.codex\//
+    )
+  | CommandLine != /SNAPSHOT_FILE=|typeset -f|alias.*sed|setopt.*head|--ripgrep/
+  | CommandLine != /config view|config current-context|config get-contexts|api-versions|cluster-info|completion|version|which kubectl|get crd|gke-gcloud-auth-plugin|metrics_reporter/i
+  | case {
+      ParentBaseFileName="cursorsandbox" | agent := "Cursor Agent";
+      CommandLine=/cursorsandbox\s+--sandbox-policy/ | agent := "Cursor Agent";
+      ParentBaseFileName="claude" | agent := "Claude Code";
+      CommandLine=/\.claude\/shell-snapshots/ | agent := "Claude Code";
+      ParentBaseFileName=/codex-/i | agent := "OpenAI Codex CLI";
+      CommandLine=/\.codex\// | agent := "OpenAI Codex CLI";
+      * | agent := "Unknown Agent";
+    }
+  | case {
+      CommandLine=/kubectl\s+exec\s.*metadata\.google\.internal/i | risk := "CRITICAL";
+      CommandLine=/kubectl\s+(exec|run|delete|drain|cordon|taint|scale|rollout)\s/i | risk := "HIGH";
+      * | risk := "MED";
+    }
+  | regex("kubectl[^|;]*-n\s+(?<k8s_ns>[a-z][a-z0-9-]+)", field=CommandLine, strict=false)
+  | regex("kubectl\s+exec\s+(?:-it\s+)?(?:-n\s+\S+\s+)?(?<k8s_pod>[a-z0-9][a-z0-9-]+)", field=CommandLine, strict=false)
+  | regex("kubectl\s+delete\s+pod\s+(?:-n\s+\S+\s+)?(?<k8s_pod>[a-z0-9][a-z0-9-]+)", field=CommandLine, strict=false)
+  | regex("kubectl\s+run\s+(?<k8s_pod>[a-z0-9][a-z0-9-]+)", field=CommandLine, strict=false)
+  | default(field=k8s_ns, value="default")
+  | format("%s@liveramp.com", field=[UserName], as=cs_email)
+  | match(file="allusers_lookup.csv", field=cs_email, column=username, include=[email], strict=false)
+  | lower(email, as=gcp_email)
+  | default(field=gcp_email, value="unknown")
+  | format(format="%s", field=[CommandLine], as=cmd)
+  | regex("COMMAND_EXIT_CODE.*?--\s+(?<cmd>.+)", field=CommandLine, strict=false)
+  | join(
+      {
+        #repo=gcp_cloudaudit
+        | protoPayload.serviceName="k8s.io"
+        | protoPayload.methodName=/^io\.k8s\..+\.(create|update|patch|delete|deletecollection)$/i
+        | protoPayload.methodName != /selfsubjectaccessreviews/i
+        | protoPayload.authenticationInfo.principalEmail=*@liveramp.com
+        | lower(protoPayload.authenticationInfo.principalEmail, as=gcp_email)
+        | rename(field=protoPayload.methodName, as=gcp_method)
+        | regex("io\.k8s\..+?\.v[0-9][a-z0-9]*\.(?<k8s_resource>[a-z]+)", field=gcp_method, strict=false)
+        | default(field=k8s_resource, value="unknown")
+        | rename(field=resource.labels.cluster_name, as=gcp_cluster)
+        | rename(field=resource.labels.project_id, as=gcp_project)
+      },
+      field=[gcp_email], key=[gcp_email], include=[gcp_method, gcp_cluster, gcp_project, k8s_resource], mode=left
+    )
+  | default(field=gcp_method, value="n/a")
+  | default(field=gcp_cluster, value="n/a")
+  | default(field=gcp_project, value="n/a")
+  | default(field=k8s_resource, value="n/a")
+  | project_name := gcp_project
+  | case {
+      gcp_project!="n/a" | match(file="gcp_sensitive_projects.csv", field=gcp_project, column="additionalAttributes.projectId", include=["labels.env", "labels.team", "labels.compl", "labels.platoon", "displayName"], strict=false) ;
+      * | * ;
+    }
+  | case { displayName!="" | project_name := displayName; * | * ; }
+  | rename(field="labels.env", as="env")
+  | rename(field="labels.team", as="team")
+  | rename(field="labels.compl", as="compliance")
+  | rename(field="labels.platoon", as="platoon")
+  | default(field=env, value="no-label")
+  | default(field=team, value="no-label")
+  | default(field=compliance, value="no-label")
+  | default(field=platoon, value="no-label")
+  | case {
+      gcp_method!="n/a" | audit_match := "YES";
+      * | audit_match := "NO";
+    }
+  | groupBy([audit_match, env, compliance, risk, UserName, gcp_email, agent, team, platoon, k8s_ns, k8s_resource, gcp_cluster, gcp_project, project_name, gcp_method], function=[count(), collect(k8s_pod, limit=3), min(@timestamp, as=first_seen), max(@timestamp, as=last_seen)])
+  | _count > 0
+  | formatTime("%Y-%m-%d %H:%M UTC", field=first_seen, as=first_seen_ts, timezone="UTC")
+  | formatTime("%Y-%m-%d %H:%M UTC", field=last_seen, as=last_seen_ts, timezone="UTC")
+  | drop([first_seen, last_seen])
+  | rename(field=first_seen_ts, as=first_seen)
+  | rename(field=last_seen_ts, as=last_seen)
+  | sort(order=desc, field=[audit_match, last_seen], limit=50)
+labels:
+- ai-agent
+- cloud-security
+- crowdstrike
+- gcp-audit
+- cross-repo-join
