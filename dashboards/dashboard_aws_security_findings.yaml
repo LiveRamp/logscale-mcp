@@ -1,0 +1,559 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: AWS Security Findings (SecurityHub & Macie)
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+parameters:
+  severity:
+    label: Severity
+    order: 1
+    type: list
+    values:
+    - '*'
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+    - LOW
+    - INFORMATIONAL
+    defaultValue: '*'
+    width: 2
+    
+  compliance_status:
+    label: Compliance Status
+    order: 2
+    type: list
+    values:
+    - '*'
+    - PASSED
+    - FAILED
+    - WARNING
+    - NOT_AVAILABLE
+    defaultValue: '*'
+    width: 2
+    
+  account:
+    label: AWS Account
+    order: 3
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  region:
+    label: AWS Region
+    order: 4
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  resource_type:
+    label: Resource Type
+    order: 5
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  workflow_status:
+    label: Workflow Status
+    order: 6
+    type: list
+    values:
+    - '*'
+    - NEW
+    - NOTIFIED
+    - RESOLVED
+    - SUPPRESSED
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  # Summary Statistics
+  total-findings:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | count()
+    visualization: single-value
+    title: Total Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  critical-high-findings:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=CRITICAL OR "detail.findings[0].Severity.Label"=HIGH
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | count()
+    visualization: single-value
+    title: Critical/High Severity
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  failed-compliance:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Compliance.Status"=FAILED
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | count()
+    visualization: single-value
+    title: Failed Compliance Checks
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  new-findings:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Workflow.Status"=NEW
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | count()
+    visualization: single-value
+    title: New Findings (Unacknowledged)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Findings Timeline
+  findings-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | timechart(span=1h, series="detail.findings[0].Severity.Label")
+    visualization: time-chart
+    title: Security Findings Timeline (by Severity)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Severity Breakdown
+  severity-distribution:
+    x: 0
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].Severity.Label", function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Findings by Severity
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Compliance Status
+  compliance-status:
+    x: 6
+    y: 9
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].Compliance.Status", function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Compliance Status Distribution
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Top Failing Controls
+  top-failing-controls:
+    x: 0
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Compliance.Status"=FAILED
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].Compliance.SecurityControlId", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Failing Security Controls
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Findings by Account
+  findings-by-account:
+    x: 6
+    y: 15
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].AwsAccountName", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Findings by AWS Account
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Findings by Region
+  findings-by-region:
+    x: 0
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].Region", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Findings by AWS Region
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Findings by Resource Type
+  findings-by-resource-type:
+    x: 6
+    y: 21
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(field="detail.findings[0].Resources[0].Type", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Findings by Resource Type
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Critical/High Findings Detail
+  critical-high-findings-table:
+    x: 0
+    y: 27
+    height: 8
+    width: 12
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=CRITICAL OR "detail.findings[0].Severity.Label"=HIGH
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | table([@timestamp, "detail.findings[0].Severity.Label", 
+              "detail.findings[0].Title", "detail.findings[0].AwsAccountName", 
+              "detail.findings[0].Region", "detail.findings[0].Resources[0].Type", 
+              "detail.findings[0].Compliance.Status", "detail.findings[0].Workflow.Status"])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="detail.findings[0].Severity.Label", as="Severity")
+      | rename(field="detail.findings[0].Title", as="Finding")
+      | rename(field="detail.findings[0].AwsAccountName", as="Account")
+      | rename(field="detail.findings[0].Region", as="Region")
+      | rename(field="detail.findings[0].Resources[0].Type", as="Resource Type")
+      | rename(field="detail.findings[0].Compliance.Status", as="Compliance")
+      | rename(field="detail.findings[0].Workflow.Status", as="Status")
+    visualization: table-view
+    title: Critical/High Severity Findings (Top 50)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Compliance Standards
+  compliance-standards:
+    x: 0
+    y: 35
+    height: 6
+    width: 12
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(["detail.findings[0].Compliance.AssociatedStandards[0].StandardsId", 
+                "detail.findings[0].Compliance.Status"], function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: table-view
+    title: Compliance by Security Standard
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # EC2 Findings
+  ec2-findings:
+    x: 0
+    y: 41
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Resources[0].Type"=*Ec2* OR "detail.findings[0].Resources[0].Type"=*EC2*
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(["detail.findings[0].Title", "detail.findings[0].Severity.Label"], function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: table-view
+    title: EC2 Security Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+      
+  # S3 Findings
+  s3-findings:
+    x: 6
+    y: 41
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Resources[0].Type"=*S3* OR "detail.findings[0].Resources[0].Type"=*s3*
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(["detail.findings[0].Title", "detail.findings[0].Severity.Label"], function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: table-view
+    title: S3 Security Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # IAM Findings
+  iam-findings:
+    x: 0
+    y: 47
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Resources[0].Type"=*Iam* OR "detail.findings[0].Resources[0].Type"=*IAM*
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(["detail.findings[0].Title", "detail.findings[0].Severity.Label"], function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: table-view
+    title: IAM Security Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+      
+  # Network/VPC Findings
+  network-findings:
+    x: 6
+    y: 47
+    height: 6
+    width: 6
+    queryString: |-
+      #type=securityhub
+      | "detail.findings[0].Resources[0].Type"=*Vpc* OR "detail.findings[0].Resources[0].Type"=*SecurityGroup* OR "detail.findings[0].Resources[0].Type"=*Network*
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | groupBy(["detail.findings[0].Title", "detail.findings[0].Severity.Label"], function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: table-view
+    title: Network/VPC Security Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Macie - Sensitive Data Findings
+  macie-sensitive-data:
+    x: 0
+    y: 53
+    height: 6
+    width: 12
+    queryString: |-
+      #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | table([@timestamp, "detail.findings[0].Title", "detail.findings[0].Severity.Label", 
+              "detail.findings[0].AwsAccountName", "detail.findings[0].Region", 
+              "detail.findings[0].Description"])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="detail.findings[0].Title", as="Finding")
+      | rename(field="detail.findings[0].Severity.Label", as="Severity")
+      | rename(field="detail.findings[0].AwsAccountName", as="Account")
+      | rename(field="detail.findings[0].Region", as="Region")
+      | rename(field="detail.findings[0].Description", as="Description")
+    visualization: table-view
+    title: Macie Sensitive Data Findings
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # All Recent Findings
+  recent-findings:
+    x: 0
+    y: 59
+    height: 10
+    width: 12
+    queryString: |-
+      #type=securityhub OR #type=macie
+      | "detail.findings[0].Severity.Label"=?{severity=*}
+      | "detail.findings[0].Compliance.Status"=?{compliance_status=*}
+      | "detail.findings[0].AwsAccountId"=*?{account=*}*
+      | "detail.findings[0].Region"=*?{region=*}*
+      | "detail.findings[0].Resources[0].Type"=*?{resource_type=*}*
+      | "detail.findings[0].Workflow.Status"=?{workflow_status=*}
+      | table([@timestamp, "detail.findings[0].Severity.Label", "detail.findings[0].Title", 
+              "detail.findings[0].AwsAccountName", "detail.findings[0].Region", 
+              "detail.findings[0].Resources[0].Type", "detail.findings[0].Resources[0].Id", 
+              "detail.findings[0].Compliance.Status", "detail.findings[0].Workflow.Status", 
+              "detail.findings[0].Description"])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="detail.findings[0].Severity.Label", as="Severity")
+      | rename(field="detail.findings[0].Title", as="Finding")
+      | rename(field="detail.findings[0].AwsAccountName", as="Account")
+      | rename(field="detail.findings[0].Region", as="Region")
+      | rename(field="detail.findings[0].Resources[0].Type", as="Resource Type")
+      | rename(field="detail.findings[0].Resources[0].Id", as="Resource ID")
+      | rename(field="detail.findings[0].Compliance.Status", as="Compliance")
+      | rename(field="detail.findings[0].Workflow.Status", as="Status")
+      | rename(field="detail.findings[0].Description", as="Description")
+    visualization: table-view
+    title: Recent Security Findings (Last 100)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false

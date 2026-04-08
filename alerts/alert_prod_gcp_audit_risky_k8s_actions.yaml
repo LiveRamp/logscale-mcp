@@ -1,0 +1,53 @@
+# CUSTOMIZE: Update #repo, principalEmail domain, and actionNameReferences for your environment
+name: prod_gcp_audit_risky_k8s_actions
+throttleTimeSeconds: 3600
+description: 'GCP audit companion to prod_ai_agent_risky_cloud_commands. Detects risky
+  k8s and IAM actions in GCP from human users. Cross-reference UserName from the CrowdStrike
+  detection with principalEmail here to confirm AI agent activity resulted in actual
+  cloud changes. Join keys: k8s_ns maps to namespace in resourceName, k8s_target maps
+  to pod/resource name in resourceName.'
+enabled: false
+queryString: |-
+  #repo=gcp_cloudaudit
+  | logName=/activity/
+  | protoPayload.authenticationInfo.principalEmail=*@liveramp.com
+  | (
+      (protoPayload.serviceName="k8s.io" AND protoPayload.methodName=/exec|pods\.delete$|pods\.create$|deployments\.(create|patch|delete)$|ingresses\.(create|patch|delete)$|statefulsets\.(create|delete)$/i)
+      OR protoPayload.methodName=/SetIamPolicy|CreateServiceAccount|DeleteServiceAccount|DeleteProject/i
+    )
+  | protoPayload.methodName != /tokenreviews|subjectaccessreviews/i
+  | regex("namespaces/(?<k8s_ns>[a-z0-9][a-z0-9-]+)", field=protoPayload.resourceName, strict=false)
+  | regex("pods/(?<k8s_target>[a-z0-9][a-z0-9-]+)", field=protoPayload.resourceName, strict=false)
+  | default(field=k8s_ns, value="n/a")
+  | default(field=k8s_target, value="n/a")
+  | case {
+      protoPayload.methodName=/exec/ | action_type := "k8s-exec";
+      protoPayload.methodName=/pods\.delete/ | action_type := "k8s-pod-delete";
+      protoPayload.methodName=/pods\.create/ | action_type := "k8s-pod-create";
+      protoPayload.methodName=/deployments/ | action_type := "k8s-deployment-change";
+      protoPayload.methodName=/ingresses/ | action_type := "k8s-ingress-change";
+      protoPayload.methodName=/statefulsets/ | action_type := "k8s-statefulset-change";
+      protoPayload.methodName=/SetIamPolicy/ | action_type := "iam-policy-change";
+      protoPayload.methodName=/CreateServiceAccount/ | action_type := "sa-create";
+      protoPayload.methodName=/DeleteServiceAccount/ | action_type := "sa-delete";
+      protoPayload.methodName=/DeleteProject/ | action_type := "project-delete";
+      * | action_type := "other";
+    }
+  | groupBy([protoPayload.authenticationInfo.principalEmail, action_type, k8s_ns, resource.labels.cluster_name, resource.labels.project_id], function=[count(), collect(k8s_target, limit=3)])
+  | _count > 0
+triggerMode: complete-mode
+searchIntervalSeconds: 900
+$schema: https://schemas.humio.com/aggregatealert/v0.2.0
+throttleFields:
+- protoPayload.authenticationInfo.principalEmail
+- action_type
+queryTimestampType: ingest-timestamp
+throttleField: protoPayload.authenticationInfo.principalEmail
+labels:
+- ai-agent
+- cloud-security
+- gcp-audit
+- gcp-audit-correlation
+- playbook:https://liveramp.atlassian.net/wiki/spaces/CI/pages/prod_gcp_audit_risky_k8s_actions
+actionNameReferences:
+- Send to Tines

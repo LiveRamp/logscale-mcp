@@ -1,0 +1,752 @@
+name: GitHub DevOps & Security
+description: Comprehensive GitHub audit dashboard for DevOps teams and Security - CI/CD health, deployments, code activity, and security monitoring
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+
+# Filters
+parameters:
+  actor:
+    label: Actor/User
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  repo:
+    label: Repository
+    order: 2
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  org:
+    label: Organization
+    order: 3
+    type: list
+    values:
+    - '*'
+    - LiveRamp
+    - deklareddotcom
+    defaultValue: '*'
+    width: 2
+    
+  action:
+    label: Action
+    order: 4
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  branch:
+    label: Branch
+    order: 5
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  workflow_conclusion:
+    label: Workflow Result
+    order: 6
+    type: list
+    values:
+    - '*'
+    - success
+    - failure
+    - cancelled
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  # ============================================
+  # DEVOPS SECTION - CI/CD & Deployment Health
+  # ============================================
+  
+  # DevOps Summary Row
+  workflow-success-rate:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | repo=?{repo=*}
+      | conclusion="success"
+      | count()
+    visualization: single-value
+    title: Successful Workflows (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  workflow-failures:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | repo=?{repo=*}
+      | conclusion="failure"
+      | count()
+    visualization: single-value
+    title: Failed Workflows (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      color: red
+    
+  deployments-today:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action="git.push"
+      | repo=?{repo=*}
+      | count()
+    visualization: single-value
+    title: Total Pushes (24h)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  active-repos:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | repo=?{repo=*}
+      | action=/^(git\.push|pull_request\.merge)$/
+      | groupBy(repo) | count()
+    visualization: single-value
+    title: Active Repos (Push/Merge)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # CI/CD Pipeline Health
+  workflow-health-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | repo=?{repo=*}
+      | conclusion=?{workflow_conclusion=*}
+      | timechart(function={groupBy(field=conclusion, function=count())}, span=1h)
+    visualization: time-chart
+    title: CI/CD Pipeline Health (Success vs Failure Over Time)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      stacking: normal
+  
+  # Failed Workflows Table
+  failed-workflows:
+    x: 0
+    y: 9
+    height: 7
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | repo=?{repo=*}
+      | conclusion="failure"
+      | table([@timestamp, actor, repo, name, head_branch, conclusion, event, run_attempt])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor", as="User")
+      | rename(field="repo", as="Repository")
+      | rename(field="name", as="Workflow")
+      | rename(field="head_branch", as="Branch")
+      | rename(field="conclusion", as="Result")
+      | rename(field="event", as="Trigger")
+      | rename(field="run_attempt", as="Attempt")
+    visualization: table-view
+    title: Failed Workflows (Needs Attention!)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Top Failing Repos
+  top-failing-repos:
+    x: 0
+    y: 16
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | conclusion="failure"
+      | groupBy(field=repo, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Repositories with Most Failures
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Workflow Success Rate by Repo
+  workflow-success-by-repo:
+    x: 6
+    y: 16
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action="workflows.completed_workflow_run"
+      | repo=?{repo=*}
+      | groupBy([repo, conclusion], function=count())
+      | sort(_count, order=desc, limit=30)
+    visualization: table-view
+    title: Workflow Results by Repository
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+  
+  # Deployment Frequency (All Pushes)
+  deployment-frequency:
+    x: 0
+    y: 21
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | action="git.push"
+      | repo=?{repo=*}
+      | actor=?{actor=*}
+      | table([@timestamp, actor, repo, programmatic_access_type, user_agent, "actor_location.country_code"])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor", as="User")
+      | rename(field="repo", as="Repository")
+      | rename(field="programmatic_access_type", as="Access Type")
+      | rename(field="user_agent", as="User Agent")
+      | rename(field="actor_location.country_code", as="Country")
+    visualization: table-view
+    title: Recent Git Pushes (Deployments & Commits)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Push by Repo
+  deployments-by-repo:
+    x: 0
+    y: 27
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action="git.push"
+      | repo=?{repo=*}
+      | groupBy(field=repo, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Push Frequency by Repository
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Push Timeline
+  deployment-timeline:
+    x: 6
+    y: 27
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action="git.push"
+      | repo=?{repo=*}
+      | timechart(span=1h)
+    visualization: time-chart
+    title: Push Timeline (Hourly)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # ============================================
+  # CODE ACTIVITY SECTION
+  # ============================================
+  
+  # All Git Activity
+  git-activity:
+    x: 0
+    y: 32
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | action=/^git\./
+      | table([@timestamp, actor, repo, action, programmatic_access_type, user_agent, "actor_location.country_code"])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="actor", as="User")
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Action")
+      | rename(field="programmatic_access_type", as="Access Type")
+      | rename(field="user_agent", as="User Agent")
+      | rename(field="actor_location.country_code", as="Country")
+    visualization: table-view
+    title: Git Activity (Push, Clone, Fetch)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Most Active Developers
+  most-active-developers:
+    x: 0
+    y: 38
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action="git.push"
+      | actor=?{actor=*}
+      | groupBy(field=actor, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Active Developers (by Pushes)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Most Active Repos
+  most-active-repos:
+    x: 6
+    y: 38
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action=/^git\.(push|clone|fetch)$/
+      | repo=?{repo=*}
+      | groupBy(field=repo, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Active Repositories
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Pull Request Metrics
+  pr-activity:
+    x: 0
+    y: 43
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | action=/pull_request\.(create|merge|close)/
+      | table([@timestamp, actor, repo, action, programmatic_access_type])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor", as="User")
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Action")
+      | rename(field="programmatic_access_type", as="Access Type")
+    visualization: table-view
+    title: Pull Request Activity (Create, Merge, Close)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # PR Velocity
+  pr-velocity:
+    x: 0
+    y: 49
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action=/pull_request\./
+      | groupBy(field=action, function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: PR Velocity (Create vs Merge vs Review)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Top PR Contributors
+  top-pr-contributors:
+    x: 6
+    y: 49
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action=/pull_request\./
+      | repo=?{repo=*}
+      | groupBy(field=actor, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top PR Contributors
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # ============================================
+  # SECURITY SECTION
+  # ============================================
+  
+  # Security Events Summary
+  security-events-count:
+    x: 0
+    y: 54
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action=/.*secret.*/ OR action=/.*member.*/ OR action=/.*permission.*/ 
+        OR action=/.*vulnerability.*/ OR action=/protected_branch\./ 
+        OR action=/.*hook.*/
+      | count()
+    visualization: single-value
+    title: Security-Sensitive Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      color: orange
+    
+  branch-protection-overrides:
+    x: 3
+    y: 54
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action="protected_branch.policy_override"
+      | count()
+    visualization: single-value
+    title: Branch Protection Overrides
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      color: red
+    
+  vulnerability-count:
+    x: 6
+    y: 54
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | action="repository_vulnerability_alert.create"
+      | count()
+    visualization: single-value
+    title: New Vulnerability Alerts
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      color: yellow
+    
+  old-token-count:
+    x: 9
+    y: 54
+    height: 3
+    width: 3
+    queryString: |-
+      #type=github_audit
+      | programmatic_access_type="OAuth access token created before 2021-04-05"
+      | groupBy(actor) | count()
+    visualization: single-value
+    title: Users with Old OAuth Tokens
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      color: red
+  
+  # Security-Sensitive Actions Table
+  security-sensitive-actions:
+    x: 0
+    y: 57
+    height: 8
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | org=?{org=*}
+      | action=/.*secret/ OR action=/.*member/ OR action=/.*permission/ 
+        OR action=/.*vulnerability/ OR action=/protected_branch\./ 
+        OR action=/.*hook/
+      | table([@timestamp, actor, org, repo, action, "actor_location.country_code", programmatic_access_type])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="actor", as="User")
+      | rename(field="org", as="Organization")
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Action")
+      | rename(field="actor_location.country_code", as="Country")
+      | rename(field="programmatic_access_type", as="Access Type")
+    visualization: table-view
+    title: Security-Sensitive Actions (Secrets, Members, Permissions, Hooks, Vulnerabilities)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Branch Protection Events
+  branch-protection-events:
+    x: 0
+    y: 65
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | action=/protected_branch\./
+      | table([@timestamp, actor, repo, action, programmatic_access_type])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor", as="User")
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Action")
+      | rename(field="programmatic_access_type", as="Access Type")
+    visualization: table-view
+    title: Branch Protection Events (Overrides, Rejections, Changes)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Vulnerability Alerts
+  vulnerability-alerts:
+    x: 0
+    y: 71
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | action=/repository_vulnerability_alert\./
+      | table([@timestamp, repo, action, actor])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Alert Action")
+      | rename(field="actor", as="User")
+    visualization: table-view
+    title: Repository Vulnerability Alerts (Create, Resolve, Withdraw)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+  
+  # Users with Old Tokens
+  old-token-users:
+    x: 0
+    y: 77
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | programmatic_access_type="OAuth access token created before 2021-04-05"
+      | groupBy(field=actor, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Users with Pre-2021 OAuth Tokens (Security Risk!)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Security Actions by Type
+  security-actions-breakdown:
+    x: 6
+    y: 77
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | action=/.*secret.*/ OR action=/.*member.*/ OR action=/.*vulnerability.*/
+      | groupBy(field=action, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Security Actions Breakdown
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # ============================================
+  # ANALYTICS SECTION
+  # ============================================
+  
+  # Team/Org Membership Changes
+  membership-changes:
+    x: 0
+    y: 82
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | action=/\.(add|remove|invite)_member/
+      | table([@timestamp, actor, org, action, team, user, repo])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="actor", as="Changed By")
+      | rename(field="org", as="Organization")
+      | rename(field="action", as="Action")
+      | rename(field="team", as="Team")
+      | rename(field="user", as="User Affected")
+      | rename(field="repo", as="Repository")
+    visualization: table-view
+    title: Team & Organization Membership Changes
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Access Pattern by Type
+  access-by-type:
+    x: 0
+    y: 88
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | groupBy(field=programmatic_access_type, function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Access Pattern by Token Type
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  # Activity by Country
+  activity-by-country:
+    x: 6
+    y: 88
+    height: 5
+    width: 6
+    queryString: |-
+      #type=github_audit
+      | "actor_location.country_code"=*
+      | groupBy(field="actor_location.country_code", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Activity by Country
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Overall Activity Timeline
+  overall-activity-timeline:
+    x: 0
+    y: 93
+    height: 6
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | org=?{org=*}
+      | action=?{action=*}
+      | timechart(function={groupBy(field=action, function=count())}, span=1h, limit=10)
+    visualization: time-chart
+    title: Overall Activity Timeline (Top 10 Actions)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Recent Activity Log
+  recent-activity-log:
+    x: 0
+    y: 99
+    height: 10
+    width: 12
+    queryString: |-
+      #type=github_audit
+      | actor=?{actor=*}
+      | repo=?{repo=*}
+      | org=?{org=*}
+      | action=?{action=*}
+      | table([@timestamp, actor, org, repo, action, "actor_location.country_code", programmatic_access_type])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="actor", as="User")
+      | rename(field="org", as="Org")
+      | rename(field="repo", as="Repository")
+      | rename(field="action", as="Action")
+      | rename(field="actor_location.country_code", as="Country")
+      | rename(field="programmatic_access_type", as="Access Type")
+    visualization: table-view
+    title: Recent Activity Log (Last 100 Events)
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false

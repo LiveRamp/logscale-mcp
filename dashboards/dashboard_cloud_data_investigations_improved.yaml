@@ -1,0 +1,483 @@
+name: Cloud Data Investigations
+description: GCP, AWS, Netskope, and Crowdstrike - Comprehensive cloud activity investigation
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 24h
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+
+# Enhanced filters
+parameters:
+  user:
+    label: User/Email
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  ip_address:
+    label: IP Address
+    order: 2
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  api_call:
+    label: API Call/Method
+    order: 3
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  project_name:
+    label: GCP Project
+    order: 4
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  resource:
+    label: Resource Name
+    order: 5
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  alert_type:
+    label: Alert Type
+    order: 6
+    type: list
+    values:
+    - '*'
+    - policy
+    - malsite
+    - DLP
+    - ips
+    - Malware
+    - anomaly
+    defaultValue: '*'
+    width: 2
+    
+  alert_name:
+    label: Alert Name
+    order: 7
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  event_name:
+    label: AWS Event Name
+    order: 8
+    type: text
+    defaultValue: '*'
+    width: 2
+    
+  severity:
+    label: Severity
+    order: 9
+    type: list
+    values:
+    - '*'
+    - critical
+    - high
+    - medium
+    - low
+    defaultValue: '*'
+    width: 2
+
+widgets:
+  # Summary widgets at top
+  total-events:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.authenticationInfo.principalEmail=?{user=*} protoPayload.requestMetadata.callerIp=?{ip_address=*})
+      OR (#type=cloudtrail userIdentity.userName=?{user=*} sourceIPAddress=?{ip_address=*})
+      OR (#type=netskope_api user=?{user=*} userip=?{ip_address=*})
+      OR (#type=FDR UserName=?{user=*})
+      | count()
+    visualization: single-value
+    title: Total Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  unique-users:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.authenticationInfo.principalEmail=?{user=*})
+      OR (#type=cloudtrail userIdentity.userName=?{user=*})
+      OR (#type=netskope_api user=?{user=*})
+      | eval(user=coalesce(protoPayload.authenticationInfo.principalEmail, userIdentity.userName, user))
+      | groupBy(user) | count()
+    visualization: single-value
+    title: Unique Users
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  unique-ips:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.requestMetadata.callerIp=?{ip_address=*})
+      OR (#type=cloudtrail sourceIPAddress=?{ip_address=*})
+      OR (#type=netskope_api userip=?{ip_address=*})
+      OR (#type=FDR LocalAddressIP4=?{ip_address=*})
+      | eval(ip=coalesce(protoPayload.requestMetadata.callerIp, sourceIPAddress, userip, LocalAddressIP4))
+      | groupBy(ip) | count()
+    visualization: single-value
+    title: Unique IPs
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    
+  data-sources:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.authenticationInfo.principalEmail=?{user=*})
+      OR (#type=cloudtrail userIdentity.userName=?{user=*})
+      OR (#type=netskope_api user=?{user=*})
+      OR (#type=FDR UserName=?{user=*})
+      | groupBy(#type) | count()
+    visualization: pie-chart
+    title: Data Sources
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Timeline
+  activity-timeline:
+    x: 0
+    y: 3
+    height: 5
+    width: 12
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.authenticationInfo.principalEmail=?{user=*} protoPayload.requestMetadata.callerIp=?{ip_address=*})
+      OR (#type=cloudtrail userIdentity.userName=?{user=*} sourceIPAddress=?{ip_address=*})
+      OR (#type=netskope_api user=?{user=*} userip=?{ip_address=*})
+      OR (#type=FDR UserName=?{user=*})
+      | timechart(function={groupBy(field=#type, function=count())}, span=1h)
+    visualization: time-chart
+    title: Activity Timeline by Data Source
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # GCP Cloud Audit - Enhanced
+  gcp-cloud-actions:
+    x: 0
+    y: 8
+    height: 8
+    width: 12
+    queryString: |-
+      #type=gcp_cloudaudit
+      | protoPayload.authenticationInfo.principalEmail=?{user=*}
+      | protoPayload.methodName=?{api_call=*}
+      | resource.labels.project_id=?{project_name=*}
+      | protoPayload.authorizationInfo[0].resource=?{resource=*}
+      | protoPayload.requestMetadata.callerIp=?{ip_address=*}
+      | table([@timestamp, protoPayload.authenticationInfo.principalEmail, protoPayload.methodName, 
+              resource.labels.project_id, protoPayload.requestMetadata.callerIp, 
+              protoPayload.authorizationInfo[0].resource, protoPayload.status.message])
+      | rename(field="protoPayload.authenticationInfo.principalEmail", as="User")
+      | rename(field="protoPayload.methodName", as="API Call")
+      | rename(field="resource.labels.project_id", as="Project")
+      | rename(field="protoPayload.requestMetadata.callerIp", as="Source IP")
+      | rename(field="protoPayload.authorizationInfo[0].resource", as="Resource")
+      | rename(field="protoPayload.status.message", as="Status")
+    visualization: table-view
+    title: GCP Cloud Audit Actions
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # GCP Top API Calls
+  gcp-top-apis:
+    x: 0
+    y: 16
+    height: 5
+    width: 6
+    queryString: |-
+      #type=gcp_cloudaudit
+      | protoPayload.authenticationInfo.principalEmail=?{user=*}
+      | protoPayload.methodName=?{api_call=*}
+      | resource.labels.project_id=?{project_name=*}
+      | groupBy(field=protoPayload.methodName, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Top GCP API Calls
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # GCP Projects
+  gcp-projects:
+    x: 6
+    y: 16
+    height: 5
+    width: 6
+    queryString: |-
+      #type=gcp_cloudaudit
+      | protoPayload.authenticationInfo.principalEmail=?{user=*}
+      | resource.labels.project_id=*
+      | groupBy(field=resource.labels.project_id, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: GCP Projects Accessed
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # AWS CloudTrail - Enhanced
+  aws-cloudtrail-events:
+    x: 0
+    y: 21
+    height: 8
+    width: 12
+    queryString: |-
+      #type=cloudtrail
+      | userIdentity.userName=?{user=*}
+      | sourceIPAddress=?{ip_address=*}
+      | eventName=?{event_name=*}
+      | table([@timestamp, userIdentity.userName, eventName, sourceIPAddress, 
+              awsRegion, userAgent, errorCode, errorMessage, requestParameters])
+      | rename(field="userIdentity.userName", as="User")
+      | rename(field="eventName", as="Event")
+      | rename(field="sourceIPAddress", as="Source IP")
+      | rename(field="awsRegion", as="Region")
+      | rename(field="userAgent", as="User Agent")
+      | rename(field="errorCode", as="Error Code")
+      | rename(field="errorMessage", as="Error Message")
+    visualization: table-view
+    title: AWS CloudTrail Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # AWS Top Events
+  aws-top-events:
+    x: 0
+    y: 29
+    height: 5
+    width: 6
+    queryString: |-
+      #type=cloudtrail
+      | userIdentity.userName=?{user=*}
+      | sourceIPAddress=?{ip_address=*}
+      | eventName=?{event_name=*}
+      | groupBy(field=eventName, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Top AWS Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # AWS Regions
+  aws-regions:
+    x: 6
+    y: 29
+    height: 5
+    width: 6
+    queryString: |-
+      #type=cloudtrail
+      | userIdentity.userName=?{user=*}
+      | awsRegion=*
+      | groupBy(field=awsRegion, function=count())
+      | sort(_count, order=desc)
+    visualization: bar-chart
+    title: AWS Regions
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Netskope Alerts - Enhanced
+  netskope-alerts:
+    x: 0
+    y: 34
+    height: 8
+    width: 12
+    queryString: |-
+      #type=netskope_api
+      | user=?{user=*}
+      | userip=?{ip_address=*}
+      | alert_type=?{alert_type=*}
+      | alert_name=?{alert_name=*}
+      | severity=?{severity=*}
+      | table([@timestamp, user, userip, alert_type, alert_name, severity, app, activity, srcip, dst_country])
+      | rename(field="user", as="User")
+      | rename(field="userip", as="User IP")
+      | rename(field="alert_type", as="Alert Type")
+      | rename(field="alert_name", as="Alert Name")
+      | rename(field="severity", as="Severity")
+      | rename(field="app", as="Application")
+      | rename(field="activity", as="Activity")
+      | rename(field="srcip", as="Source IP")
+      | rename(field="dst_country", as="Destination")
+    visualization: table-view
+    title: Netskope Alerts & Policy Violations
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Netskope Top Alerts
+  netskope-top-alerts:
+    x: 0
+    y: 42
+    height: 5
+    width: 6
+    queryString: |-
+      #type=netskope_api
+      | user=?{user=*}
+      | alert_type=?{alert_type=*}
+      | groupBy(field=alert_name, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Top Netskope Alerts
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Netskope by Severity
+  netskope-severity:
+    x: 6
+    y: 42
+    height: 5
+    width: 6
+    queryString: |-
+      #type=netskope_api
+      | user=?{user=*}
+      | alert_type=?{alert_type=*}
+      | severity=*
+      | groupBy(field=severity, function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Alerts by Severity
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # FDR/CrowdStrike Endpoint Activity
+  fdr-endpoint-activity:
+    x: 0
+    y: 47
+    height: 8
+    width: 12
+    queryString: |-
+      #type=FDR
+      | UserName=?{user=*}
+      | LocalAddressIP4=?{ip_address=*}
+      | table([@timestamp, UserName, ComputerName, event_simpleName, ImageFileName, 
+              CommandLine, LocalAddressIP4, ParentBaseFileName])
+      | rename(field="UserName", as="User")
+      | rename(field="ComputerName", as="Hostname")
+      | rename(field="event_simpleName", as="Event")
+      | rename(field="ImageFileName", as="Process")
+      | rename(field="CommandLine", as="Command Line")
+      | rename(field="LocalAddressIP4", as="Local IP")
+      | rename(field="ParentBaseFileName", as="Parent Process")
+    visualization: table-view
+    title: CrowdStrike Endpoint Activity
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # FDR Top Events
+  fdr-top-events:
+    x: 0
+    y: 55
+    height: 5
+    width: 6
+    queryString: |-
+      #type=FDR
+      | UserName=?{user=*}
+      | groupBy(field=event_simpleName, function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Top Endpoint Events
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # FDR Hosts
+  fdr-hosts:
+    x: 6
+    y: 55
+    height: 5
+    width: 6
+    queryString: |-
+      #type=FDR
+      | UserName=?{user=*}
+      | ComputerName=*
+      | groupBy(field=ComputerName, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Active Endpoints
+    isLive: false
+    type: query
+    start: 24h
+    end: now
+  
+  # Geographic activity
+  geographic-activity:
+    x: 0
+    y: 60
+    height: 6
+    width: 12
+    queryString: |-
+      (#type=gcp_cloudaudit protoPayload.requestMetadata.callerIp=?{ip_address=*})
+      OR (#type=cloudtrail sourceIPAddress=?{ip_address=*})
+      OR (#type=netskope_api srcip=?{ip_address=*})
+      | eval(ip=coalesce(protoPayload.requestMetadata.callerIp, sourceIPAddress, srcip))
+      | ip=*
+      | worldMap(ip=ip)
+    visualization: world-map
+    title: Geographic Distribution of Activity
+    isLive: false
+    type: query
+    start: 24h
+    end: now

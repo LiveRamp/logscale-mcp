@@ -1,0 +1,308 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: Google Workspace - User Activity & Security
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 7d
+parameters:
+  user_search:
+    label: 🔍 Search User/Owner (Optional)
+    order: 1
+    type: text
+    defaultValue: '*'
+    width: 3
+
+widgets:
+  # Security Summary Cards
+  total-logins:
+    x: 0
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=google_workspace
+      | login.login_type=*
+      | count()
+    visualization: single-value
+    title: Total Logins
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    
+  suspicious-logins:
+    x: 3
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=google_workspace
+      | login.is_suspicious="true"
+      | count()
+    visualization: single-value
+    title: 🚨 Suspicious Logins
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    
+  external-shares:
+    x: 6
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | drive.owner=*?{user_search=*}*
+      | count()
+    visualization: single-value
+    title: ⚠️ External File Shares
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    
+  permission-changes:
+    x: 9
+    y: 0
+    height: 3
+    width: 3
+    queryString: |-
+      #type=google_workspace
+      | drive.new_value=*
+      | drive.old_value=*
+      | drive.owner=*?{user_search=*}* OR drive.target_user=*?{user_search=*}*
+      | count()
+    visualization: single-value
+    title: Permission Changes
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+  
+  # Login Activity Timeline
+  login-timeline:
+    x: 0
+    y: 3
+    height: 6
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | login.login_type=*
+      | timechart(span=4h, series="login.login_type")
+    visualization: time-chart
+    title: Login Activity Timeline (By Type)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+  
+  # Suspicious Login Detection - WITH DETAILS
+  suspicious-logins-detailed:
+    x: 0
+    y: 9
+    height: 8
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | login.is_suspicious="true"
+      | table([@timestamp, login.login_type, login.login_challenge_method, 
+              login.sensitive_action_name, @rawstring])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="login.login_type", as="Login Type")
+      | rename(field="login.login_challenge_method", as="Challenge Method")
+      | rename(field="login.sensitive_action_name", as="Sensitive Action")
+      | rename(field="@rawstring", as="Full Event Data")
+    visualization: table-view
+    title: 🚨 Suspicious Login Events - Click to Investigate (Last 100)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Login Types Distribution
+  login-types:
+    x: 0
+    y: 17
+    height: 6
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | login.login_type=*
+      | groupBy(field="login.login_type", function=count())
+      | sort(_count, order=desc)
+    visualization: pie-chart
+    title: Login Methods (SAML/Password/Reauth)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    
+  # External File Sharing Activity
+  external-share-timeline:
+    x: 6
+    y: 17
+    height: 6
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | drive.owner=*?{user_search=*}*
+      | timechart(span=12h)
+    visualization: time-chart
+    title: External File Sharing Timeline
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+  
+  # Top External Sharers (Risk) - CLICKABLE
+  top-external-sharers:
+    x: 0
+    y: 23
+    height: 6
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | drive.owner=*?{user_search=*}*
+      | groupBy(field="drive.owner", function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    title: Top Users Sharing Externally (Click User to Filter)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    
+  # Drive File Types Shared Externally
+  external-file-types:
+    x: 6
+    y: 23
+    height: 6
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | drive.owner=*?{user_search=*}*
+      | drive.doc_type=*
+      | groupBy(field="drive.doc_type", function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: pie-chart
+    title: Externally Shared File Types
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+  
+  # Permission Changes Activity - WITH USER DETAILS
+  permission-changes-list:
+    x: 0
+    y: 29
+    height: 10
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | drive.old_value=*
+      | drive.new_value=*
+      | drive.owner=*?{user_search=*}* OR drive.target_user=*?{user_search=*}*
+      | table([@timestamp, drive.owner, drive.target_user, drive.doc_title, 
+              drive.old_value, drive.new_value, drive.visibility, drive.doc_id])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="drive.owner", as="File Owner")
+      | rename(field="drive.target_user", as="User Given Access")
+      | rename(field="drive.doc_title", as="Document")
+      | rename(field="drive.old_value", as="Old Permission")
+      | rename(field="drive.new_value", as="New Permission")
+      | rename(field="drive.visibility", as="Visibility")
+      | rename(field="drive.doc_id", as="Document ID")
+    visualization: table-view
+    title: Recent Permission Changes - WHO Got Access to WHAT (Last 100)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # External Shares - Detailed WITH OWNER
+  recent-external-shares:
+    x: 0
+    y: 39
+    height: 10
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | drive.owner=*?{user_search=*}*
+      | table([@timestamp, drive.owner, drive.doc_title, drive.doc_type, 
+              drive.target_user, drive.old_visibility, drive.visibility_change, drive.doc_id])
+      | sort(@timestamp, order=desc, limit=100)
+      | rename(field="drive.owner", as="File Owner")
+      | rename(field="drive.doc_title", as="Document")
+      | rename(field="drive.doc_type", as="File Type")
+      | rename(field="drive.target_user", as="Shared With User")
+      | rename(field="drive.old_visibility", as="Previous Visibility")
+      | rename(field="drive.visibility_change", as="Change Type")
+      | rename(field="drive.doc_id", as="Document ID")
+    visualization: table-view
+    title: Recent External File Shares - WHO Shared WHAT With Whom (Last 100)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Password-based Logins (Security Risk) - WITH FULL DETAILS
+  password-logins:
+    x: 0
+    y: 49
+    height: 8
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | login.login_type="google_password"
+      | table([@timestamp, login.login_challenge_method, login.is_suspicious, @rawstring])
+      | sort(@timestamp, order=desc, limit=50)
+      | rename(field="login.login_challenge_method", as="Challenge Method")
+      | rename(field="login.is_suspicious", as="Suspicious")
+      | rename(field="@rawstring", as="Full Details")
+    visualization: table-view
+    title: Password-Based Logins (Should Use SSO)
+    isLive: false
+    type: query
+    start: 7d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: false
+  
+  # Most Active Drive Users - SEARCHABLE
+  most-active-drive-users:
+    x: 6
+    y: 49
+    height: 8
+    width: 6
+    queryString: |-
+      #type=google_workspace
+      | drive.owner=*?{user_search=*}*
+      | groupBy(field="drive.owner", function=count())
+      | sort(_count, order=desc, limit=20)
+    visualization: bar-chart
+    title: Most Active Drive Users (Click to Filter)
+    isLive: false
+    type: query
+    start: 7d
+    end: now

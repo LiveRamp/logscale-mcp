@@ -1,0 +1,331 @@
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+name: SOC 2 Audit Evidence
+timeSelector: {}
+sharedTimeInterval:
+  enabled: true
+  isLive: false
+  start: 90d
+parameters:
+  review_period:
+    label: Audit Period
+    order: 1
+    type: list
+    values:
+    - 7d
+    - 30d
+    - 90d
+    - 365d
+    defaultValue: 90d
+    width: 2
+
+widgets:
+  # Evidence Summary Counts (Minimal)
+  total-events-logged:
+    x: 0
+    y: 0
+    height: 2
+    width: 3
+    queryString: |-
+      *
+      | count()
+    visualization: single-value
+    title: Total Events Logged (Retention Proof)
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    
+  log-sources-count:
+    x: 3
+    y: 0
+    height: 2
+    width: 3
+    queryString: |-
+      *
+      | groupBy(field=#type, function=count())
+      | count()
+    visualization: single-value
+    title: Number of Log Sources
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    
+  retention-by-repo:
+    x: 6
+    y: 0
+    height: 12
+    width: 6
+    queryString: |-
+      *
+      | groupBy(#repo, function=[min(@timestamp), max(@timestamp), count()])
+      | eval(earliest_date=formatTime("%Y-%m-%d %H:%M", field=_min))
+      | eval(latest_date=formatTime("%Y-%m-%d %H:%M", field=_max))
+      | table([#repo, earliest_date, latest_date, _count])
+      | rename("#repo", as="Repository")
+      | rename("earliest_date", as="First Event")
+      | rename("latest_date", as="Last Event")
+      | rename("_count", as="Total Events")
+      | sort("Total Events", order=desc)
+    visualization: table-view
+    title: Log Retention by Repository (Date Range Proof)
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 1: Authentication Events (CC6.3, CC7.2)
+  authentication-log-raw:
+    x: 0
+    y: 12
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp OR #type=google_workspace)
+      | eventType=* OR login.login_type=*
+      | table([@timestamp, #type, eventType, login.login_type, "actor.alternateId", 
+              outcome.result, "client.ipAddress", "client.geographicalContext.country", 
+              "client.userAgent.rawUserAgent"])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="#type", as="Log Source")
+      | rename(field="eventType", as="Event Type")
+      | rename(field="login.login_type", as="Login Method")
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="outcome.result", as="Result")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.userAgent.rawUserAgent", as="User Agent")
+    visualization: table-view
+    title: "CC6.3 & CC7.2: Authentication Log (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 2: Failed Authentication Attempts (CC7.3)
+  failed-auth-log-raw:
+    x: 0
+    y: 24
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | outcome.result="FAILURE"
+      | table([@timestamp, #type, eventType, "actor.alternateId", "outcome.reason", 
+              "client.ipAddress", "client.geographicalContext.country", 
+              "client.geographicalContext.city", "target.alternateId"])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="#type", as="Log Source")
+      | rename(field="eventType", as="Event Type")
+      | rename(field="actor.alternateId", as="User")
+      | rename(field="outcome.reason", as="Failure Reason")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="client.geographicalContext.country", as="Country")
+      | rename(field="client.geographicalContext.city", as="City")
+      | rename(field="target.alternateId", as="Target")
+    visualization: table-view
+    title: "CC7.3: Failed Authentication Attempts (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 3: Privileged Account Activity (CC6.3)
+  privileged-access-log-raw:
+    x: 0
+    y: 36
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=okta_customer OR #type=okta_corp)
+      | eventType=/.*admin.*/ OR eventType=/.*policy.*/ OR eventType=/.*role.*/ OR eventType=/.*privileged.*/
+      | table([@timestamp, #type, eventType, "actor.alternateId", "target.alternateId", 
+              "target.displayName", outcome.result, "client.ipAddress", debugContext.debugData.requestUri])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="#type", as="Log Source")
+      | rename(field="eventType", as="Admin Action")
+      | rename(field="actor.alternateId", as="Admin User")
+      | rename(field="target.alternateId", as="Target User")
+      | rename(field="target.displayName", as="Target Resource")
+      | rename(field="outcome.result", as="Result")
+      | rename(field="client.ipAddress", as="Source IP")
+      | rename(field="debugContext.debugData.requestUri", as="API Endpoint")
+    visualization: table-view
+    title: "CC6.3: Privileged Account Activity Log (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 4: Configuration Changes (CC8.1)
+  configuration-changes-log-raw:
+    x: 0
+    y: 48
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=github_audit action=/.*config.*/ OR action=/.*setting.*/)
+      OR (#type=okta_customer eventType=/.*policy.*/ OR eventType=/.*config.*/ OR eventType=/.*rule.*/)
+      OR (#type=cloudtrail eventName=/.*Put.*/ OR eventName=/.*Create.*/ OR eventName=/.*Update.*/ OR eventName=/.*Delete.*/)
+      | table([@timestamp, #type, eventName, eventType, action, "userIdentity.userName", 
+              "actor.alternateId", user, sourceIPAddress, "client.ipAddress", awsRegion])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="#type", as="Log Source")
+      | rename(field="eventName", as="Change Action (AWS)")
+      | rename(field="eventType", as="Change Type (Okta)")
+      | rename(field="action", as="Action (GitHub)")
+      | rename(field="userIdentity.userName", as="User (AWS)")
+      | rename(field="actor.alternateId", as="User (Okta)")
+      | rename(field="user", as="User (GitHub)")
+      | rename(field="sourceIPAddress", as="IP (AWS)")
+      | rename(field="client.ipAddress", as="IP (Okta)")
+      | rename(field="awsRegion", as="AWS Region")
+    visualization: table-view
+    title: "CC8.1: Configuration Changes Log (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 5: Security Alerts/Incidents (CC7.3)
+  security-incidents-log-raw:
+    x: 0
+    y: 60
+    height: 12
+    width: 12
+    queryString: |-
+      (#type=netskope_api action="alert" OR action="useralert")
+      OR (#type=proofpoint_tap event_type="messagesBlocked")
+      OR (#type=crowdstrike_fdr)
+      | table([@timestamp, #type, action, event_type, alert, user, "ns.cs-username", 
+              srcip, userip, senderIP, threat, malwareScore, phishScore, app, policy])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="#type", as="Alert Source")
+      | rename(field="action", as="Alert Type")
+      | rename(field="event_type", as="Event Type")
+      | rename(field="alert", as="Alert Name")
+      | rename(field="user", as="User")
+      | rename(field="ns.cs-username", as="Username (Netskope)")
+      | rename(field="srcip", as="Source IP")
+      | rename(field="userip", as="User IP")
+      | rename(field="senderIP", as="Sender IP")
+      | rename(field="threat", as="Threat")
+      | rename(field="malwareScore", as="Malware Score")
+      | rename(field="phishScore", as="Phish Score")
+      | rename(field="app", as="Application")
+      | rename(field="policy", as="Policy Violated")
+    visualization: table-view
+    title: "CC7.3: Security Alerts & Incidents Log (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 6: External Data Sharing (Data Loss Prevention)
+  external-sharing-log-raw:
+    x: 0
+    y: 72
+    height: 12
+    width: 12
+    queryString: |-
+      #type=google_workspace
+      | drive.visibility="shared_externally"
+      | table([@timestamp, drive.owner, drive.target_user, drive.doc_title, drive.doc_type, 
+              drive.doc_id, drive.old_visibility, drive.visibility, drive.visibility_change])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="drive.owner", as="File Owner")
+      | rename(field="drive.target_user", as="Shared With User")
+      | rename(field="drive.doc_title", as="Document Name")
+      | rename(field="drive.doc_type", as="File Type")
+      | rename(field="drive.doc_id", as="Document ID (Google)")
+      | rename(field="drive.old_visibility", as="Previous Visibility")
+      | rename(field="drive.visibility", as="Current Visibility")
+      | rename(field="drive.visibility_change", as="Change Type")
+    visualization: table-view
+    title: "Data Loss Prevention: External File Sharing Log (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 7: Network Security Events (Firewall)
+  network-security-log-raw:
+    x: 0
+    y: 84
+    height: 12
+    width: 12
+    queryString: |-
+      #type=paloalto_firewall
+      | Vendor.action="drop" OR Vendor.action="deny" OR Vendor.action="block"
+      | table([@timestamp, Vendor.action, source.ip, destination.ip, destination.port, 
+              Vendor.application, Vendor.source_user, Vendor.rule, Vendor.source_country])
+      | sort(@timestamp, order=desc, limit=500)
+      | rename(field="Vendor.action", as="Action")
+      | rename(field="source.ip", as="Source IP")
+      | rename(field="destination.ip", as="Destination IP")
+      | rename(field="destination.port", as="Dest Port")
+      | rename(field="Vendor.application", as="Application")
+      | rename(field="Vendor.source_user", as="User")
+      | rename(field="Vendor.rule", as="Firewall Rule")
+      | rename(field="Vendor.source_country", as="Source Country")
+    visualization: table-view
+    title: "CC7.2: Network Security Events - Blocked Traffic (Raw - Last 500 Events)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true
+  
+  # RAW LOG TABLE 8: All Log Sources with Event Counts (Retention Evidence)
+  log-sources-inventory:
+    x: 0
+    y: 96
+    height: 10
+    width: 12
+    queryString: |-
+      *
+      | groupBy(field=#type, function=count())
+      | sort(_count, order=desc)
+      | rename(field="#type", as="Log Source / Data Type")
+      | rename(field="_count", as="Total Events in Period")
+    visualization: table-view
+    title: "CC7.2: Log Sources Inventory & Retention Evidence (All Sources)"
+    isLive: false
+    type: query
+    start: 90d
+    end: now
+    options:
+      cell-overflow: wrap-text
+      column-overflow: truncate
+      row-numbers-enabled: true

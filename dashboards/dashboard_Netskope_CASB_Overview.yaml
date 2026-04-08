@@ -1,0 +1,157 @@
+name: Netskope CASB Overview
+timeSelector: {}
+sharedTimeInterval:
+  enabled: false
+  isLive: false
+  start: 1d
+filters:
+  ruJYKsNuos3gzP3tdFrLQpDMakRGkjtC:
+    queryPrefix: '@event_parsed!="false"'
+    title: clean
+widgets:
+  8b3e89a5-661d-487b-92a6-0c4ecae29b21:
+    x: 0
+    y: 0
+    height: 4
+    queryString: |-
+      #type=netskope_api
+      | groupBy(field=device_classification, function=count())
+      | sort(_count, order=desc, limit=10)
+    visualization: pie-chart
+    end: now
+    start: 24h
+    width: 2
+    title: Managed Devices
+    isLive: false
+    type: query
+  827e6895-9b09-4510-a2c1-89d047d86a71:
+    x: 6
+    y: 0
+    height: 4
+    queryString: |-
+      #type=netskope_api
+      | groupBy(field=ccl, function=count())
+      | sort(_count, order=desc)
+    end: now
+    start: 24h
+    width: 2
+    options:
+      series: {}
+    visualization: pie-chart
+    title: Cloud Confidence Level Breakdown
+    isLive: false
+    type: query
+  5476fef4-9b4a-4734-9909-76f32e98f52b:
+    x: 4
+    y: 0
+    height: 4
+    queryString: |-
+      #type=netskope_api
+      | groupBy(field=browser, function=count())
+      | sort(_count, order=desc, limit=10)
+    end: now
+    start: 24h
+    width: 2
+    options:
+      series: {}
+    visualization: pie-chart
+    title: Browser Breakdown
+    isLive: false
+    type: query
+  d9f2c0ac-b279-4d48-a609-30a51134bf36:
+    x: 6
+    y: 4
+    height: 9
+    queryString: |-
+      #type=netskope_api
+      | groupBy([srcip, dstip], function=count())
+      | sort(_count, order=desc, limit=10)
+      | sankey(source=srcip, target=dstip)
+    visualization: sankey
+    end: now
+    start: 24h
+    width: 6
+    title: Most Common Connections
+    isLive: false
+    type: query
+  b4d94a8d-42e4-42df-95c3-0353b2b22836:
+    x: 0
+    y: 13
+    height: 9
+    queryString: |-
+      #type=netskope_api
+      | worldMap(ip=srcip)
+    visualization: world-map
+    end: now
+    start: 24h
+    width: 12
+    title: Activity Map
+    isLive: false
+    type: query
+  3d69e42e-1b68-491d-bbef-30d62597145c:
+    x: 0
+    y: 4
+    height: 9
+    queryString: |-
+      #type=netskope_api
+      | groupBy(field=activity, function=count())
+      | sort(_count, order=desc, limit=15)
+    visualization: bar-chart
+    end: now
+    start: 24h
+    width: 6
+    title: Top Application Activities
+    isLive: false
+    type: query
+  c352c748-dcd9-452d-870f-007c8c66876e:
+    x: 2
+    y: 0
+    height: 4
+    queryString: |-
+      #type=netskope_api
+      | groupBy(field=device, function=count())
+      | sort(_count, order=desc, limit=10)
+    end: now
+    start: 24h
+    width: 2
+    options:
+      series: {}
+    visualization: pie-chart
+    title: Device Breakdown
+    isLive: false
+    type: query
+  30d0a180-9e45-4879-b3bd-77cc2ffaf213:
+    x: 8
+    y: 0
+    height: 4
+    queryString: |-
+      #type=netskope_api
+      os="unknown"
+      | groupBy(field=user, function=count())
+    end: now
+    start: 24h
+    width: 4
+    options:
+      ct:
+      - bg: inherit
+        txt: var(--single-value-trend-negative-text-color)
+      - bg: inherit
+        txt: var(--single-value-warning-text-color)
+      - bg: inherit
+        txt: var(--single-value-trend-positive-text-color)
+      - bg: inherit
+        txt: var(--single-value-warning-text-color)
+      decimal-places: 2
+      color-method: static
+      suffix: Users
+      use-colorised-thresholds: false
+      value-format: raw
+      default:
+        bg: inherit
+        txt: var(--single-value-trend-positive-text-color)
+    visualization: single-value
+    title: Using unknown OS or Device
+    isLive: false
+    type: query
+$schema: https://schemas.humio.com/dashboard/v0.23.0
+defaultFilterId: ruJYKsNuos3gzP3tdFrLQpDMakRGkjtC
