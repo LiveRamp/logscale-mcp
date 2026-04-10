@@ -56,8 +56,8 @@ Common locations:
 ### **Firewall Requirements**
 The MCP server needs access to:
 - Your LogScale instance (typically HTTPS/443)
-- No inbound connections required
-- Cursor communicates via stdio (local process communication)
+- Inbound connections are not required for the default **stdio** transport (Cursor runs the process locally)
+- If you enable **Streamable HTTP** (`MCP_TRANSPORT=http`), the process listens on `MCP_HTTP_HOST`/`MCP_HTTP_PORT` (default `127.0.0.1:3333`); restrict to localhost and/or set `MCP_HTTP_TOKEN` before exposing beyond your machine
 
 ## 🔍 Security Validation
 

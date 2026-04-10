@@ -24,7 +24,7 @@ This MCP server integrates LogScale directly into your IDE, providing **27 tools
 
 1. **Install dependencies**:
 ```bash
-cd integrations/logscale/logscale_mcp
+cd /path/to/logscale-mcp
 npm install
 ```
 
@@ -40,14 +40,37 @@ LOG_LEVEL=info
 - `LOGSCALE_API_TOKEN` -- Used for REST search queries
 - `LOGSCALE_USER_API_TOKEN` -- Used for GraphQL operations (dashboards, alerts, repos). Falls back to `LOGSCALE_API_TOKEN` if not set.
 
-3. **Add to Cursor MCP configuration** -- Edit `~/.cursor/mcp.json`:
+3. **Add to Cursor MCP configuration** -- Edit `~/.cursor/mcp.json`.
+
+   **stdio (default)** — Cursor spawns the server as a subprocess:
 ```json
 {
   "mcpServers": {
     "logscale": {
       "command": "node",
-      "args": ["/absolute/path/to/integrations/logscale/logscale_mcp/server.js"],
+      "args": ["/absolute/path/to/logscale-mcp/server.js"],
       "env": {}
+    }
+  }
+}
+```
+
+   **Streamable HTTP** — Run the server with HTTP enabled, then point Cursor at the URL.
+
+   Terminal (after configuring `.env`):
+```bash
+MCP_TRANSPORT=http npm start
+```
+   Or use `npm run start:http`. Defaults: `127.0.0.1:3333`, path `/mcp`. Override with `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_PATH` in `.env` or the shell.
+
+   Optional: set `MCP_HTTP_TOKEN` and send `Authorization: Bearer <token>` from clients that support custom headers (otherwise bind to `127.0.0.1` only for local use).
+
+   Cursor `mcp.json`:
+```json
+{
+  "mcpServers": {
+    "logscale": {
+      "url": "http://127.0.0.1:3333/mcp"
     }
   }
 }
@@ -188,7 +211,7 @@ logscale_create_alert(
 
 ## Architecture
 
-- **Node.js MCP Server** (`server.js`) -- Handles MCP protocol communication via stdio
+- **Node.js MCP Server** (`server.js`) -- MCP over **stdio** (default) or **Streamable HTTP** (`MCP_TRANSPORT=http`), using `@modelcontextprotocol/sdk`
 - **REST API** -- Used for log search queries (`LOGSCALE_API_TOKEN`)
 - **GraphQL API** -- Used for dashboard/alert management (`LOGSCALE_USER_API_TOKEN`)
 - **CQL Docs Cache** (`docs/`) -- Cached CQL and dashboard documentation for AI reference
@@ -197,7 +220,7 @@ logscale_create_alert(
 
 - Credentials stored in `.env` file (git-ignored), never logged or exposed in error messages
 - Two separate API tokens for least-privilege access (search vs. management)
-- All communication uses HTTPS via stdio transport (no HTTP listener exposed)
+- Default stdio transport does not open an inbound port; optional Streamable HTTP binds to a configurable host/port (use `127.0.0.1` and `MCP_HTTP_TOKEN` for local hardening)
 - Input validation on all user-supplied parameters:
   - Repository names restricted to `[a-zA-Z0-9_.\-]`
   - Job IDs restricted to `[a-zA-Z0-9_\-]`

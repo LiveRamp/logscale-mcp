@@ -2,10 +2,14 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
+  isInitializeRequest,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import cors from 'cors';
+import express from 'express';
 import dotenv from 'dotenv';
 import yaml from 'js-yaml';
 import { createRequire } from 'module';
@@ -213,14 +217,15 @@ if (!API_TOKEN || !BASE_URL || !REPOSITORY) {
   process.exit(1);
 }
 
-const server = new Server({
-  name: 'logscale-mcp-server',
-  version: VERSION,
-}, {
-  capabilities: {
-    tools: {},
-  },
-});
+function createLogscaleMcpServer() {
+  const server = new Server({
+    name: 'logscale-mcp-server',
+    version: VERSION,
+  }, {
+    capabilities: {
+      tools: {},
+    },
+  });
 
 // ============================================================================
 // Tool Definitions
@@ -1233,6 +1238,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 });
+
+  return server;
+}
 
 // ============================================================================
 // Query Handlers
@@ -3322,10 +3330,168 @@ async function handleDocsText(args) {
 // Utility Functions
 // ============================================================================
 
+/** Active Streamable HTTP sessions (session id → transport). */
+const streamableTransports = Object.create(null);
+
+async function runStreamableHttpServer() {
+  const host = process.env.MCP_HTTP_HOST || '127.0.0.1';
+  const port = Number.parseInt(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || '3333', 10);
+  let basePath = (process.env.MCP_HTTP_PATH || '/mcp').trim();
+  if (!basePath.startsWith('/')) {
+    basePath = `/${basePath}`;
+  }
+  basePath = basePath.replace(/\/+$/, '') || '/mcp';
+  const bearerToken = process.env.MCP_HTTP_TOKEN?.trim();
+
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(cors({ origin: true, credentials: true }));
+  app.use(express.json({ type: 'application/json', limit: '4mb' }));
+
+  function requireHttpToken(req, res, next) {
+    if (!bearerToken) {
+      next();
+      return;
+    }
+    const authz = req.headers.authorization;
+    if (authz !== `Bearer ${bearerToken}`) {
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Unauthorized' },
+        id: null,
+      });
+      return;
+    }
+    next();
+  }
+
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true, name: 'logscale-mcp-server', version: VERSION, transport: 'streamable-http' });
+  });
+
+  const mcpPostHandler = async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'];
+    try {
+      let transport;
+      if (sessionId && streamableTransports[sessionId]) {
+        transport = streamableTransports[sessionId];
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid) => {
+            streamableTransports[sid] = transport;
+          },
+        });
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && streamableTransports[sid]) {
+            delete streamableTransports[sid];
+          }
+        };
+        const mcp = createLogscaleMcpServer();
+        await mcp.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      } else {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Bad Request: expected initialize request or valid Mcp-Session-Id',
+          },
+          id: null,
+        });
+        return;
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      log('error', `MCP HTTP POST error: ${error.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
+    }
+  };
+
+  const mcpGetHandler = async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'];
+    if (!sessionId || !streamableTransports[sessionId]) {
+      res.status(400).send('Invalid or missing Mcp-Session-Id');
+      return;
+    }
+    const transport = streamableTransports[sessionId];
+    await transport.handleRequest(req, res);
+  };
+
+  const mcpDeleteHandler = async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'];
+    if (!sessionId || !streamableTransports[sessionId]) {
+      res.status(400).send('Invalid or missing Mcp-Session-Id');
+      return;
+    }
+    try {
+      const transport = streamableTransports[sessionId];
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      log('error', `MCP HTTP DELETE error: ${error.message}`);
+      if (!res.headersSent) {
+        res.status(500).send('Error processing session termination');
+      }
+    }
+  };
+
+  app.post(basePath, requireHttpToken, mcpPostHandler);
+  app.get(basePath, requireHttpToken, mcpGetHandler);
+  app.delete(basePath, requireHttpToken, mcpDeleteHandler);
+
+  const server = app.listen(port, host, () => {
+    const displayUrl = `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}${basePath}`;
+    log('info', `🚀 LogScale MCP Server v${VERSION} — Streamable HTTP at ${displayUrl} (27 tools)`);
+    if (bearerToken) {
+      log('info', '🔐 MCP_HTTP_TOKEN is set; clients must send Authorization: Bearer <token>');
+    } else {
+      log('warn', '⚠️  No MCP_HTTP_TOKEN: HTTP endpoint is open to local connections; set MCP_HTTP_TOKEN for a shared secret');
+    }
+  });
+
+  const shutdown = async (signal) => {
+    log('info', `${signal} received, closing HTTP and MCP sessions...`);
+    for (const sid of Object.keys(streamableTransports)) {
+      try {
+        await streamableTransports[sid].close();
+      } catch (e) {
+        log('warn', `Error closing session ${sid}: ${e.message}`);
+      }
+      delete streamableTransports[sid];
+    }
+    await new Promise((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
 async function main() {
+  const mode = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
+  if (mode === 'http' || mode === 'streamable-http') {
+    await runStreamableHttpServer();
+    return;
+  }
+  if (mode !== 'stdio') {
+    log('error', `Unknown MCP_TRANSPORT "${mode}". Use "stdio" (default) or "http".`);
+    process.exit(1);
+  }
+
+  const mcp = createLogscaleMcpServer();
   const transport = new StdioServerTransport();
-  log('info', `🚀 LogScale MCP Server v${VERSION} ready (27 tools)`);
-  await server.connect(transport);
+  log('info', `🚀 LogScale MCP Server v${VERSION} ready (stdio, 27 tools)`);
+  await mcp.connect(transport);
 }
 
 main().catch((error) => {
