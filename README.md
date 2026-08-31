@@ -40,6 +40,8 @@ LOG_LEVEL=info
 - `LOGSCALE_API_TOKEN` -- Used for REST search queries
 - `LOGSCALE_USER_API_TOKEN` -- Used for GraphQL operations (dashboards, alerts, repos). Falls back to `LOGSCALE_API_TOKEN` if not set.
 
+> **Note:** The two tokens can be scoped to different search domains. A view may appear in `logscale_list_repos` (GraphQL token) yet return 404 from `logscale_query` (REST token), or vice versa. If a view 404s, check the REST token's view access before changing the query -- `logscale_status` tests both tokens.
+
 3. **Add to Cursor MCP configuration** -- Edit `~/.cursor/mcp.json`.
 
    **stdio (default)** — Cursor spawns the server as a subprocess:

@@ -55,7 +55,7 @@ Use this skill when querying SIEM logs, managing dashboards, creating or managin
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `logscale_list_repos` | List all repositories and views with sizes | (none) |
+| `logscale_list_repos` | List all repositories and views (labeled by type) with sizes | (none) |
 | `logscale_status` | Health check: connectivity, tokens, config | (none) |
 | `logscale_docs_sync` | Download/refresh CQL docs from LogScale | `category`, `format`, `refresh` |
 | `logscale_docs` | List cached documentation | `category`, `include_content` |
@@ -97,6 +97,7 @@ CQL is pipe-based: `filter | transform | aggregate`
 3. **Filter early, aggregate late**: put filters before `groupBy`/`count` to reduce data scanned
 4. **Sample first**: use `head(5)` before expensive queries across large time ranges
 5. **Field values are case-sensitive**: use regex with `/i` flag for case-insensitive matching
+6. **`#view=` does not exist**: it silently matches 0 events with no error. `#repo=` matches raw repository names only and never matches view names. To query a view (`SOC`, `detections`, etc.), pass the view name in the `repository` tool parameter instead — never as a CQL tag.
 
 ### Query Patterns
 
@@ -146,6 +147,11 @@ CQL is pipe-based: `filter | transform | aggregate`
 ```
 
 ## Available Repositories
+
+Raw repositories are targeted with `#repo=<name>` inside CQL. Views (e.g. `SOC`, `detections`) are
+not in this table — they're read-only abstractions spanning multiple repos, and are targeted
+exclusively via the `repository` tool parameter (`logscale_list_repos` labels each search domain as
+Repository or View). `#view=` is not a valid CQL tag and `#repo=<view_name>` never matches.
 
 | Repo | Data Source | Key Fields |
 |------|-------------|------------|
