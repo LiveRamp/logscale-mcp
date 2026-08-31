@@ -14,10 +14,12 @@ import dotenv from 'dotenv';
 import yaml from 'js-yaml';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import { mkdir, readdir, readFile, stat, writeFile } from 'fs/promises';
 import { randomUUID } from 'node:crypto';
 import {
+  setLogLevel,
+  log,
   parseTimeInput,
   normalizeMaxEvents,
   normalizeMaxChars,
@@ -26,13 +28,12 @@ import {
   formatTimestamp as formatTimestampUtil,
   validateRepoName,
   validateJobId,
+  assertNoViewTag,
   sanitizeErrorText,
   safePath,
-  decodeHtmlEntities,
-  stripTags,
   htmlToText,
   htmlToMarkdown,
-  parseCSVLine as parseCSVLineUtil,
+  parseCSVLine,
   fileExists,
   safeReadDir,
 } from './lib/utils.js';
@@ -52,17 +53,34 @@ const USER_API_TOKEN = process.env.LOGSCALE_USER_API_TOKEN || API_TOKEN;
 const BASE_URL = process.env.LOGSCALE_BASE_URL;
 const REPOSITORY = process.env.LOGSCALE_REPOSITORY;
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
-const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const DOCS_DIR = join(__dirname, 'docs');
 const CQL_DOCS_DIR = join(DOCS_DIR, 'cql');
 const DASHBOARD_DOCS_DIR = join(DOCS_DIR, 'dashboards');
 const DASHBOARD_YAML_DIR = __dirname;
-const FETCH_TIMEOUT_MS = Number.parseInt(process.env.LOGSCALE_REQUEST_TIMEOUT_MS || '30000', 10);
-const QUERY_MAX_ATTEMPTS = Number.parseInt(process.env.LOGSCALE_QUERY_MAX_ATTEMPTS || '60', 10);
-const QUERY_POLL_INTERVAL_MS = Number.parseInt(process.env.LOGSCALE_QUERY_POLL_INTERVAL_MS || '500', 10);
+
+// Parse a positive-integer env var, falling back to the default on missing/garbage values
+const intEnv = (name, fallback) => {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const FETCH_TIMEOUT_MS = intEnv('LOGSCALE_REQUEST_TIMEOUT_MS', 30000);
+// Wall-clock budget for a query job (the Query Jobs API supports long-running jobs;
+// jobs only self-delete server-side after 90s without polls)
+const QUERY_TIMEOUT_MS = intEnv('LOGSCALE_QUERY_TIMEOUT_MS', 120000);
+// Fallback poll interval when the poll response doesn't supply pollAfter
+const QUERY_POLL_INTERVAL_MS = intEnv('LOGSCALE_QUERY_POLL_INTERVAL_MS', 500);
+// Cap on rendered query-result text (events beyond this are elided, not lost server-side)
+const MAX_RESULT_CHARS = intEnv('LOGSCALE_MAX_RESULT_CHARS', 100000);
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1000;
 const DASHBOARD_SCHEMA_VERSION = process.env.LOGSCALE_DASHBOARD_SCHEMA_VERSION || 'v0.23.0';
+
+const ALERT_TYPE_LABELS = {
+  filter: 'Filter Alert',
+  aggregate: 'Aggregate Alert',
+  scheduled: 'Scheduled Search',
+};
 
 const CQL_DOCS_SOURCES = [
   {
@@ -198,13 +216,7 @@ const DASHBOARD_DOCS_SOURCES = [
 
 const DOCS_SOURCES = [...CQL_DOCS_SOURCES, ...DASHBOARD_DOCS_SOURCES];
 
-const log = (level, message) => {
-  const current = LOG_LEVELS[LOG_LEVEL] ?? LOG_LEVELS.info;
-  const desired = LOG_LEVELS[level] ?? LOG_LEVELS.info;
-  if (desired <= current) {
-    console.error(message);
-  }
-};
+setLogLevel(LOG_LEVEL);
 
 log('info', '🔍 LogScale MCP Server Starting...');
 log('info', `📊 Base URL: ${BASE_URL || 'NOT SET'}`);
@@ -242,11 +254,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             search_term: {
               type: 'string',
-              description: 'Search query (e.g., "error", "status_code=500")',
+              description: 'Search query (e.g., "error", "status_code=500"). Note: #view= is not valid CQL — to search a view, pass its name in the repository parameter.',
             },
             repository: {
               type: 'string',
-              description: 'Repository or view name to query (overrides default from .env)',
+              description: 'Repository or view name to query (overrides default from .env). View names (SOC, detections, ...) go here — never as a CQL tag.',
             },
             start_time: {
               type: 'string',
@@ -276,11 +288,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             query: {
               type: 'string',
-              description: 'LogScale Query Language query',
+              description: 'LogScale Query Language (CQL) query. #repo=<repo> is the only tag filter — #view= does not exist and silently matches nothing. To query a view, pass its name in the repository parameter; use #repo= only with raw repository names (view names never match #repo=).',
             },
             repository: {
               type: 'string',
-              description: 'Repository or view name to query (overrides default from .env)',
+              description: 'Repository or view name to query (overrides default from .env). View names (SOC, detections, ...) go here — never as a CQL tag.',
             },
             start_time: {
               type: 'string',
@@ -293,7 +305,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             max_events: {
               type: 'number',
-              description: 'Maximum number of events to return (1-10000). Only applied to non-aggregate queries. Omit to return all results.',
+              description: 'Maximum number of events to return (1-10000). Only applied to non-aggregate queries. If omitted, LogScale\'s own default limit applies (~200 events for filter queries) — set this or use an explicit head()/tail() to control result size.',
               minimum: 1,
               maximum: 10000,
             },
@@ -338,7 +350,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
             widgets: {
               type: 'array',
@@ -429,7 +441,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
             filter: {
               type: 'string',
@@ -454,7 +466,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
           },
         },
@@ -475,7 +487,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
             save_to_file: {
               type: 'string',
@@ -500,7 +512,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
             replace_existing: {
               type: 'boolean',
@@ -528,7 +540,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides .env default)',
+              description: 'Repository or view name (overrides .env default)',
             },
             new_name: {
               type: 'string',
@@ -980,7 +992,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Discovery Tools ---
       {
         name: 'logscale_list_repos',
-        description: 'List all repositories and views available in LogScale with storage sizes',
+        description: 'List all repositories and views available in LogScale with type labels and storage sizes. Views are queried via the repository parameter of query tools — never with a #view= tag (which is not valid CQL).',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1004,7 +1016,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             repository: {
               type: 'string',
-              description: 'Repository name (overrides default from .env)',
+              description: 'Repository or view name (overrides default from .env)',
             },
           },
         },
@@ -1021,7 +1033,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides default from .env)',
+              description: 'Repository or view name (overrides default from .env)',
             },
             filter: {
               type: 'string',
@@ -1059,7 +1071,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             repository: {
               type: 'string',
-              description: 'Repository name (overrides default from .env)',
+              description: 'Repository or view name (overrides default from .env)',
             },
           },
           required: ['filename'],
@@ -1253,7 +1265,7 @@ async function handleLogScaleSearch(args) {
   }
 
   const maxEvents = normalizeMaxEvents(max_events);
-  const query = `${search_term} | head ${maxEvents}`;
+  const query = `${search_term} | head(${maxEvents})`;
 
   log('debug', `🔍 Search query: ${query}`);
   log('debug', `📂 Repository: ${repository || REPOSITORY} ${repository ? '(override)' : '(default)'}`);
@@ -1270,7 +1282,10 @@ async function handleLogScaleQuery(args) {
   // If max_events is set, append a head() to cap results for non-aggregate queries
   let finalQuery = query;
   if (max_events !== undefined) {
-    const cap = Math.min(Math.max(1, Number.parseInt(String(max_events), 10) || 10000), 10000);
+    const cap = Number.parseInt(String(max_events), 10);
+    if (!Number.isFinite(cap) || cap < 1 || cap > 10000) {
+      throw new Error('max_events must be a number between 1 and 10000');
+    }
     finalQuery = `${query} | head(${cap})`;
   }
 
@@ -1285,25 +1300,14 @@ async function handleCancelQuery(args) {
   const safeJobId = validateJobId(job_id);
 
   const deleteUrl = `${BASE_URL}/api/v1/repositories/${repo}/queryjobs/${safeJobId}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const response = await restFetch(deleteUrl, {
+    method: 'DELETE',
+    timeoutLabel: 'Cancel query job request',
+  });
 
-  try {
-    const response = await fetch(deleteUrl, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${API_TOKEN}` },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const errorText = sanitizeErrorText(await response.text());
-      throw new Error(`Failed to cancel query job ${safeJobId}: ${response.status} ${errorText}`);
-    }
-  } catch (err) {
-    if (err.name === 'AbortError') throw new Error('Request timed out cancelling query job');
-    throw err;
-  } finally {
-    clearTimeout(timeout);
+  if (!response.ok) {
+    const errorText = sanitizeErrorText(await response.text());
+    throw new Error(`Failed to cancel query job ${safeJobId}: ${response.status} ${errorText}`);
   }
 
   return {
@@ -1313,6 +1317,7 @@ async function handleCancelQuery(args) {
 
 async function executeLogScaleQuery(query, startTime, endTime, repository) {
   const repo = validateRepoName(repository || REPOSITORY);
+  assertNoViewTag(query);
   const end = parseTimeInput(endTime, Date.now(), true);
   const start = parseTimeInput(startTime, end, false);
 
@@ -1327,38 +1332,17 @@ async function executeLogScaleQuery(query, startTime, endTime, repository) {
 
   log('debug', `🌐 Creating query job at: ${jobUrl}`);
 
-  const requestBody = {
-    queryString: query,
-    start: start,
-    end: end,
-    isLive: false,
-  };
-
   // Step 1: Create the query job
   const jobInfo = await withRetry(async () => {
-    const createController = new AbortController();
-    const createTimeout = setTimeout(() => createController.abort(), FETCH_TIMEOUT_MS);
-    let createResponse;
-    try {
-      createResponse = await fetch(jobUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal: createController.signal,
-      });
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error('LogScale API request timed out');
-      throw err;
-    } finally {
-      clearTimeout(createTimeout);
-    }
+    const createResponse = await restFetch(jobUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ queryString: query, start, end, isLive: false }),
+      timeoutLabel: 'LogScale API request',
+    });
 
     if (!createResponse.ok) {
-      const errorText = sanitizeErrorText(await createResponse.text());
-      throw new Error(`LogScale API error (${createResponse.status}): ${errorText}`);
+      throw httpError('LogScale API error', createResponse.status, sanitizeErrorText(await createResponse.text()));
     }
 
     return await createResponse.json();
@@ -1367,75 +1351,77 @@ async function executeLogScaleQuery(query, startTime, endTime, repository) {
 
   log('debug', `📋 Query job created: ${jobId}`);
 
-  // Step 2: Poll for results
+  // Step 2: Poll until done or the wall-clock budget runs out, honoring the
+  // server's pollAfter backoff hint. Jobs otherwise linger server-side until
+  // the 90s no-poll expiry, so cleanup runs on every exit path.
   const pollUrl = `${BASE_URL}/api/v1/repositories/${repo}/queryjobs/${jobId}`;
+  const deadline = Date.now() + QUERY_TIMEOUT_MS;
   let pollResult = null;
-  let attempts = 0;
 
-  while (attempts < QUERY_MAX_ATTEMPTS) {
-    attempts++;
+  try {
+    for (;;) {
+      pollResult = await withRetry(async () => {
+        const pollResponse = await restFetch(pollUrl, {
+          headers: { 'Accept': 'application/json' },
+          timeoutLabel: 'LogScale poll request',
+        });
 
-    const pollController = new AbortController();
-    const pollTimeout = setTimeout(() => pollController.abort(), FETCH_TIMEOUT_MS);
-    let pollResponse;
-    try {
-      pollResponse = await fetch(pollUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${API_TOKEN}`,
-          'Accept': 'application/json',
-        },
-        signal: pollController.signal,
-      });
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error('LogScale poll request timed out');
-      throw err;
-    } finally {
-      clearTimeout(pollTimeout);
+        if (!pollResponse.ok) {
+          throw httpError('LogScale poll error', pollResponse.status, sanitizeErrorText(await pollResponse.text()));
+        }
+
+        return await pollResponse.json();
+      }, 'QueryJobPoll');
+
+      log('debug', `📊 Poll: done=${pollResult.done}, events=${pollResult.events?.length || 0}`);
+
+      if (pollResult.done) break;
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Query exceeded ${QUERY_TIMEOUT_MS}ms and was cancelled. Narrow the time range or raise LOGSCALE_QUERY_TIMEOUT_MS.`);
+      }
+
+      const pollAfter = pollResult.metaData?.pollAfter;
+      const waitMs = Number.isFinite(pollAfter) && pollAfter > 0 ? pollAfter : QUERY_POLL_INTERVAL_MS;
+      await new Promise(resolvePoll => setTimeout(resolvePoll, Math.max(0, Math.min(waitMs, deadline - Date.now()))));
     }
-
-    if (!pollResponse.ok) {
-      throw new Error(`LogScale poll error (${pollResponse.status}): ${pollResponse.statusText}`);
-    }
-
-    pollResult = await pollResponse.json();
-    log('debug', `📊 Poll attempt ${attempts}: done=${pollResult.done}, events=${pollResult.events?.length || 0}`);
-
-    if (pollResult.done) {
-      break;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, QUERY_POLL_INTERVAL_MS));
-  }
-
-  if (attempts >= QUERY_MAX_ATTEMPTS) {
-    // Best-effort cleanup of timed-out job
+  } finally {
     deleteQueryJob(repo, jobId);
-    throw new Error('Query timed out waiting for results');
   }
 
-  // Clean up completed query job
-  deleteQueryJob(repo, jobId);
+  if (pollResult.cancelled) {
+    throw new Error('Query job was cancelled server-side before completing — results discarded.');
+  }
 
   // Parse response
   const events = pollResult.events || [];
-  const metaData = pollResult.metaData || null;
+  const metaData = pollResult.metaData || {};
+  const warnings = [...(pollResult.warnings || []), ...(metaData.warnings || [])];
 
   log('debug', `📊 Parsed ${events.length} events from query job`);
 
-  // Format results
-  const summary = {
-    query: query,
-    timeRange: `${new Date(start).toISOString()} to ${new Date(end).toISOString()}`,
-    totalEvents: events.length,
-    queryTime: metaData?.pollResult?.queryTime || 'unknown',
-  };
+  // The API reports truncation via extraData.hasMoreEvents (filter queries hit
+  // LogScale's default ~200-event result cap unless the query sets head()/tail())
+  const hasMoreEvents = metaData.extraData?.hasMoreEvents === 'true'
+    || (Number.isFinite(metaData.eventCount) && metaData.eventCount > events.length);
 
   let resultText = `# LogScale Query Results\n\n`;
   resultText += `**Query:** \`${query}\`\n`;
-  resultText += `**Time Range:** ${summary.timeRange}\n`;
-  resultText += `**Total Events:** ${summary.totalEvents}\n`;
-  resultText += `**Query Time:** ${summary.queryTime}ms\n\n`;
+  resultText += `**Time Range:** ${new Date(start).toISOString()} to ${new Date(end).toISOString()}\n`;
+  resultText += `**Total Events:** ${events.length}${hasMoreEvents ? ' (⚠️ truncated by LogScale — more events matched; use head()/tail() or max_events to control the limit)' : ''}\n`;
+  if (Number.isFinite(metaData.timeMillis)) {
+    resultText += `**Query Time:** ${metaData.timeMillis}ms\n`;
+  }
+  if (Number.isFinite(metaData.processedEvents)) {
+    resultText += `**Events Scanned:** ${metaData.processedEvents}\n`;
+  }
+  resultText += '\n';
+
+  for (const warning of warnings) {
+    const message = typeof warning === 'string' ? warning : (warning.message || JSON.stringify(warning));
+    resultText += `> ⚠️ **Warning:** ${message} — results may be incomplete.\n`;
+  }
+  if (warnings.length > 0) resultText += '\n';
 
   if (events.length === 0) {
     resultText += `*No events found matching the query.*\n\n`;
@@ -1443,36 +1429,38 @@ async function executeLogScaleQuery(query, startTime, endTime, repository) {
     // Check if this looks like an aggregate query (no @rawstring, no @timestamp typically)
     const firstEvent = events[0];
     const isAggregate = !firstEvent['@rawstring'] && !firstEvent['@id'];
+    const columns = isAggregate ? Object.keys(firstEvent).filter(k => !k.startsWith('@')) : [];
+    let elidedFrom = null;
 
-    if (isAggregate && events.length > 0) {
+    if (isAggregate && columns.length > 0) {
       // Format as a compact markdown table
-      const columns = Object.keys(firstEvent).filter(k => !k.startsWith('@'));
-      if (columns.length > 0) {
-        resultText += `## Results\n\n`;
-        resultText += `| ${columns.join(' | ')} |\n`;
-        resultText += `| ${columns.map(() => '---').join(' | ')} |\n`;
-        for (const event of events) {
-          resultText += `| ${columns.map(c => String(event[c] ?? '')).join(' | ')} |\n`;
+      resultText += `## Results\n\n`;
+      resultText += `| ${columns.join(' | ')} |\n`;
+      resultText += `| ${columns.map(() => '---').join(' | ')} |\n`;
+      for (let i = 0; i < events.length; i++) {
+        if (resultText.length > MAX_RESULT_CHARS) {
+          elidedFrom = i;
+          break;
         }
-        resultText += '\n';
-      } else {
-        // Fallback to JSON
-        resultText += `## Events\n\n`;
-        events.forEach((event, index) => {
-          resultText += `### Event ${index + 1}\n`;
-          resultText += '```json\n';
-          resultText += JSON.stringify(event, null, 2);
-          resultText += '\n```\n\n';
-        });
+        resultText += `| ${columns.map(c => String(events[i][c] ?? '')).join(' | ')} |\n`;
       }
+      resultText += '\n';
     } else {
       resultText += `## Events\n\n`;
-      events.forEach((event, index) => {
-        resultText += `### Event ${index + 1}\n`;
+      for (let i = 0; i < events.length; i++) {
+        if (resultText.length > MAX_RESULT_CHARS) {
+          elidedFrom = i;
+          break;
+        }
+        resultText += `### Event ${i + 1}\n`;
         resultText += '```json\n';
-        resultText += JSON.stringify(event, null, 2);
+        resultText += JSON.stringify(events[i], null, 2);
         resultText += '\n```\n\n';
-      });
+      }
+    }
+
+    if (elidedFrom !== null) {
+      resultText += `*Output truncated: showing ${elidedFrom} of ${events.length} events (${MAX_RESULT_CHARS} char limit). Narrow the query or aggregate to see the rest.*\n`;
     }
   }
 
@@ -1487,8 +1475,47 @@ async function executeLogScaleQuery(query, startTime, endTime, repository) {
 }
 
 // ============================================================================
-// Retry and GraphQL Helpers
+// HTTP, Retry, and GraphQL Helpers
 // ============================================================================
+
+// Fetch with the standard auth header, request timeout, and AbortError translation.
+// Pass token: null for external (non-LogScale) URLs so credentials are never leaked.
+async function restFetch(url, { method = 'GET', headers = {}, body, token = API_TOKEN, timeoutLabel = 'LogScale API request' } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      method,
+      headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}), ...headers },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const timeoutErr = new Error(`${timeoutLabel} timed out`);
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Error carrying the actual HTTP status so retry logic doesn't have to regex the message
+function httpError(prefix, status, detail) {
+  const err = new Error(`${prefix} (${status}): ${detail}`);
+  err.httpStatus = status;
+  return err;
+}
+
+function isRetryableError(err) {
+  if (err.isTimeout || err.name === 'AbortError') return true;
+  if (Number.isFinite(err.httpStatus)) return err.httpStatus >= 500;
+  // Network-level failures never carry an HTTP status
+  return Boolean(err.message && /ECONNRESET|ECONNREFUSED|fetch failed|network/i.test(err.message));
+}
+
 async function withRetry(fn, label = 'request') {
   let lastError;
   for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
@@ -1496,9 +1523,7 @@ async function withRetry(fn, label = 'request') {
       return await fn();
     } catch (err) {
       lastError = err;
-      const isRetryable = err.name === 'AbortError'
-        || (err.message && /5\d{2}|timed out|ECONNRESET|ECONNREFUSED|fetch failed/i.test(err.message));
-      if (!isRetryable || attempt >= RETRY_MAX_ATTEMPTS) throw err;
+      if (!isRetryableError(err) || attempt >= RETRY_MAX_ATTEMPTS) throw err;
       const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
       log('warn', `⚠️ ${label} attempt ${attempt} failed (${err.message}), retrying in ${delay}ms...`);
       await new Promise(r => setTimeout(r, delay));
@@ -1507,35 +1532,28 @@ async function withRetry(fn, label = 'request') {
   throw lastError;
 }
 
-async function executeGraphQL(query, variables = {}) {
+async function executeGraphQL(query, variables = {}, { retry } = {}) {
   const graphqlUrl = `${BASE_URL}/graphql`;
 
   log('debug', `🔗 GraphQL request to: ${graphqlUrl}`);
 
-  return withRetry(async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    let response;
-    try {
-      response = await fetch(graphqlUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${USER_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ query, variables }),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error('GraphQL request timed out');
-      throw err;
-    } finally {
-      clearTimeout(timeout);
-    }
+  // Mutations are not retried by default: a create/delete that completed
+  // server-side but timed out client-side would be re-executed (duplicate
+  // alerts/dashboards). Reads are safe to retry.
+  const isMutation = /^\s*mutation\b/i.test(query);
+  const shouldRetry = retry ?? !isMutation;
+
+  const doRequest = async () => {
+    const response = await restFetch(graphqlUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+      token: USER_API_TOKEN,
+      timeoutLabel: 'GraphQL request',
+    });
 
     if (!response.ok) {
-      const errorText = sanitizeErrorText(await response.text());
-      throw new Error(`GraphQL HTTP error (${response.status}): ${errorText}`);
+      throw httpError('GraphQL HTTP error', response.status, sanitizeErrorText(await response.text()));
     }
 
     const result = await response.json();
@@ -1546,11 +1564,9 @@ async function executeGraphQL(query, variables = {}) {
 
     log('debug', `✓ GraphQL request successful`);
     return result.data;
-  }, 'GraphQL');
-}
+  };
 
-function generateUUID() {
-  return randomUUID();
+  return shouldRetry ? withRetry(doRequest, 'GraphQL') : doRequest();
 }
 
 // Best-effort cleanup of a completed or timed-out query job
@@ -1581,7 +1597,7 @@ async function handleCreateDashboard(args) {
   // Build widgets template
   const widgetsTemplate = {};
   widgets.forEach((widget, index) => {
-    const widgetId = generateUUID();
+    const widgetId = randomUUID();
     widgetsTemplate[widgetId] = {
       x: widget.x ?? (index % 2) * 6,
       y: widget.y ?? Math.floor(index / 2) * 4,
@@ -1625,40 +1641,15 @@ async function handleCreateDashboard(args) {
   const templateJson = JSON.stringify(template);
   log('debug', `📋 Template size: ${templateJson.length} bytes`);
 
-  const mutation = `
-    mutation CreateDashboard($viewName: RepoOrViewName!, $name: String!, $yamlTemplate: YAML!) {
-      createDashboardFromTemplateV2(input: {
-        viewName: $viewName,
-        name: $name,
-        yamlTemplate: $yamlTemplate
-      }) {
-        id
-        name
-        displayName
-      }
-    }
-  `;
+  const dashboard = await deployDashboardTemplate(repo, name, templateJson);
+  const dashboardUrl = `${BASE_URL}/${repo}/dashboards/${dashboard.id}`;
 
-  try {
-    const result = await executeGraphQL(mutation, {
-      viewName: repo,
-      name,
-      yamlTemplate: templateJson,
-    });
-
-    const dashboard = result.createDashboardFromTemplateV2;
-    const dashboardUrl = `${BASE_URL}/${repo}/dashboards/${dashboard.id}`;
-
-    return {
-      content: [{
-        type: 'text',
-        text: `✅ Dashboard "${name}" created successfully!\n\n**ID:** ${dashboard.id}\n**Repository:** ${repo}\n**Widgets:** ${widgets.length}\n**View at:** ${dashboardUrl}`,
-      }],
-    };
-  } catch (error) {
-    log('error', `❌ Failed to create dashboard: ${error.message}`);
-    throw error;
-  }
+  return {
+    content: [{
+      type: 'text',
+      text: `✅ Dashboard "${name}" created successfully!\n\n**ID:** ${dashboard.id}\n**Repository:** ${repo}\n**Widgets:** ${widgets.length}\n**View at:** ${dashboardUrl}`,
+    }],
+  };
 }
 
 // Dashboard helper: fetch all dashboards
@@ -1718,6 +1709,43 @@ async function deleteDashboardById(repo, dashboardId) {
     }
   `;
   return await executeGraphQL(mutation, { id: dashboardId });
+}
+
+// Dashboard helper: fetch a dashboard's name and YAML template (null if not found)
+async function fetchDashboardTemplate(repo, dashboardId) {
+  const data = await executeGraphQL(`
+    query ExportDashboard($repo: String!, $dashId: String!) {
+      searchDomain(name: $repo) {
+        ... on View { dashboard(id: $dashId) { id name displayName yamlTemplate } }
+        ... on Repository { dashboard(id: $dashId) { id name displayName yamlTemplate } }
+      }
+    }
+  `, { repo, dashId: dashboardId });
+  return data?.searchDomain?.dashboard || null;
+}
+
+// Dashboard helper: replace an existing dashboard with a new template.
+// createDashboardFromTemplateV2 rejects duplicate names, so replacement is
+// delete-then-create — back up the current template first and restore it if
+// the new template fails to deploy, so a bad template can't destroy the dashboard.
+async function replaceDashboard(repo, existingId, name, template) {
+  const backup = await fetchDashboardTemplate(repo, existingId);
+  const dashName = name || backup?.displayName || backup?.name;
+  if (!dashName) throw new Error(`Dashboard ${existingId} not found in ${repo}`);
+  await deleteDashboardById(repo, existingId);
+  try {
+    return await deployDashboardTemplate(repo, dashName, template);
+  } catch (err) {
+    if (backup?.yamlTemplate) {
+      try {
+        const restored = await deployDashboardTemplate(repo, backup.displayName || backup.name, backup.yamlTemplate);
+        err.message += ` — the original dashboard was restored (new ID: ${restored.id})`;
+      } catch (restoreErr) {
+        err.message += ` — WARNING: restoring the original dashboard also failed (${restoreErr.message}); its template backup was lost with it`;
+      }
+    }
+    throw err;
+  }
 }
 
 async function handleListDashboards(args) {
@@ -1792,16 +1820,7 @@ async function handleExportDashboard(args) {
     targetId = resolved.id;
   }
 
-  const data = await executeGraphQL(`
-    query ExportDashboard($repo: String!, $dashId: String!) {
-      searchDomain(name: $repo) {
-        ... on View { dashboard(id: $dashId) { id name displayName yamlTemplate } }
-        ... on Repository { dashboard(id: $dashId) { id name displayName yamlTemplate } }
-      }
-    }
-  `, { repo, dashId: targetId });
-
-  const dashboard = data?.searchDomain?.dashboard;
+  const dashboard = await fetchDashboardTemplate(repo, targetId);
   if (!dashboard) throw new Error(`Dashboard ${targetId} not found`);
 
   const yamlContent = dashboard.yamlTemplate;
@@ -1828,20 +1847,23 @@ async function handleDeployYaml(args) {
   const filePath = safePath(DASHBOARD_YAML_DIR, yaml_file);
   const content = await readFile(filePath, 'utf8');
   const parsed = yaml.load(content, { schema: yaml.JSON_SCHEMA });
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`YAML file "${yaml_file}" does not contain a dashboard template object`);
+  }
+
   const dashName = name_override || parsed.name;
 
   if (!dashName) throw new Error('Dashboard name not found in YAML and no name_override provided');
 
-  // Handle replacement
-  if (replace_existing) {
-    const existing = await resolveDashboardId(repo, dashName);
-    if (existing) {
-      log('info', `🗑️ Deleting existing dashboard "${dashName}" (${existing.id}) for replacement`);
-      await deleteDashboardById(repo, existing.id);
-    }
+  let result;
+  const existing = replace_existing ? await resolveDashboardId(repo, dashName) : null;
+  if (existing) {
+    log('info', `🔄 Replacing existing dashboard "${dashName}" (${existing.id})`);
+    result = await replaceDashboard(repo, existing.id, dashName, JSON.stringify(parsed));
+  } else {
+    result = await deployDashboardTemplate(repo, dashName, JSON.stringify(parsed));
   }
-
-  const result = await deployDashboardTemplate(repo, dashName, JSON.stringify(parsed));
   const dashboardUrl = `${BASE_URL}/${repo}/dashboards/${result.id}`;
 
   return {
@@ -1867,14 +1889,13 @@ async function handleUpdateDashboard(args) {
     targetName = resolved.displayName || resolved.name;
   }
 
-  // If yaml_template is provided, do a full template update (delete + recreate)
+  // If yaml_template is provided, do a full template update (delete + recreate,
+  // with rollback to the original template if the new one fails to deploy)
   if (yaml_template) {
-    await deleteDashboardById(repo, targetId);
-    const dashName = new_name || targetName;
-    const result = await deployDashboardTemplate(repo, dashName, yaml_template);
+    const result = await replaceDashboard(repo, targetId, new_name || targetName, yaml_template);
     const dashboardUrl = `${BASE_URL}/${repo}/dashboards/${result.id}`;
     return {
-      content: [{ type: 'text', text: `✅ Dashboard "${dashName}" updated (replaced) successfully!\n\n**New ID:** ${result.id}\n**View at:** ${dashboardUrl}` }],
+      content: [{ type: 'text', text: `✅ Dashboard "${result.displayName || result.name}" updated (replaced) successfully!\n\n**New ID:** ${result.id}\n**View at:** ${dashboardUrl}` }],
     };
   }
 
@@ -1917,6 +1938,7 @@ async function fetchAlertsByType(repo, type = 'all') {
       id name description queryString enabled labels
       throttleTimeSeconds throttleFields
       lastTriggered lastError
+      queryOwnership { __typename }
       actions { id name __typename }
     }`,
     aggregate: `aggregateAlerts {
@@ -1924,13 +1946,15 @@ async function fetchAlertsByType(repo, type = 'all') {
       throttleTimeSeconds throttleFields searchIntervalSeconds
       queryTimestampType triggerMode
       lastTriggered lastSuccessfulPoll lastError
+      queryOwnership { __typename }
       actions { id name __typename }
     }`,
     scheduled: `scheduledSearches {
       id name description queryString enabled labels
-      schedule timeZone searchIntervalSeconds
+      schedule timeZone searchIntervalSeconds maxWaitTimeSeconds
       queryTimestampType backfillLimitV2 triggerOnEmptyResult
       timeOfLastExecution timeOfLastTrigger lastError
+      queryOwnership { __typename }
       actionsV2 { id name __typename }
     }`,
   };
@@ -1994,6 +2018,11 @@ async function resolveAlertId(repo, nameOrId, typeHint) {
   }
 
   return null;
+}
+
+// Derive the mutation-input ownership enum from an alert's queryOwnership union
+function existingOwnershipType(alert) {
+  return alert?.queryOwnership?.__typename === 'UserOwnership' ? 'User' : 'Organization';
 }
 
 // Resolve action names to IDs
@@ -2079,7 +2108,7 @@ async function handleListAlerts(args) {
   text += `| --- | --- | --- | --- | --- |\n`;
 
   for (const a of allAlerts) {
-    const typeLabel = a._type === 'filter' ? 'Filter' : a._type === 'aggregate' ? 'Aggregate' : 'Scheduled';
+    const typeLabel = ALERT_TYPE_LABELS[a._type].split(' ')[0];
     const labels = (a.labels || []).join(', ') || '-';
     const errorStatus = a.lastError ? '⚠️ Error' : '✅';
     text += `| ${typeLabel} | ${a.name} | ${a.enabled ? '✅' : '❌'} | ${labels} | ${errorStatus} |\n`;
@@ -2102,7 +2131,7 @@ async function handleGetAlert(args) {
   }
 
   const { alert, type: alertType } = resolved;
-  const typeLabel = alertType === 'filter' ? 'Filter Alert' : alertType === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[alertType];
 
   let text = `# ${typeLabel}: ${alert.name}\n\n`;
   text += `**ID:** ${alert.id}\n`;
@@ -2228,7 +2257,7 @@ async function handleCreateAlert(args) {
         actionIdsOrNames: resolvedActions,
         queryOwnershipType: query_ownership_type,
         searchIntervalSeconds: search_interval_seconds,
-        throttleTimeSeconds: throttle_seconds || 60,
+        throttleTimeSeconds: throttle_seconds !== undefined ? throttle_seconds : 60,
         queryTimestampType: query_timestamp_type,
         enabled,
         ...(description !== undefined && { description }),
@@ -2283,7 +2312,7 @@ async function handleCreateAlert(args) {
   const data = await executeGraphQL(mutation, variables);
   const created = data[resultPath];
 
-  const typeLabel = type === 'filter' ? 'Filter Alert' : type === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[type];
 
   return {
     content: [{
@@ -2333,6 +2362,8 @@ async function handleUpdateAlert(args) {
         }
       }
     `;
+    // The V2 update is full-replace: omitted optional fields are reset, so
+    // every field falls back to the alert's current value.
     variables = {
       input: {
         viewName: repo,
@@ -2340,12 +2371,12 @@ async function handleUpdateAlert(args) {
         name: new_name || existing.name,
         queryString: query_string || existing.queryString,
         actionIdsOrNames: resolvedActions || existingActions,
-        queryOwnershipType: query_ownership_type || 'Organization',
+        queryOwnershipType: query_ownership_type || existingOwnershipType(existing),
         enabled: enabled !== undefined ? enabled : existing.enabled,
         labels: labels || existing.labels || [],
         throttleFields: throttle_fields || existing.throttleFields || [],
-        ...(description !== undefined && { description }),
-        ...(throttle_seconds !== undefined && { throttleTimeSeconds: throttle_seconds }),
+        description: description !== undefined ? description : (existing.description || ''),
+        throttleTimeSeconds: throttle_seconds !== undefined ? throttle_seconds : (existing.throttleTimeSeconds ?? 0),
       },
     };
     resultPath = 'updateFilterAlertV2';
@@ -2366,15 +2397,15 @@ async function handleUpdateAlert(args) {
         name: new_name || existing.name,
         queryString: query_string || existing.queryString,
         actionIdsOrNames: resolvedActions || existingActions,
-        queryOwnershipType: query_ownership_type || 'Organization',
-        searchIntervalSeconds: search_interval_seconds || existing.searchIntervalSeconds,
-        throttleTimeSeconds: throttle_seconds !== undefined ? throttle_seconds : (existing.throttleTimeSeconds || 60),
+        queryOwnershipType: query_ownership_type || existingOwnershipType(existing),
+        searchIntervalSeconds: search_interval_seconds !== undefined ? search_interval_seconds : existing.searchIntervalSeconds,
+        throttleTimeSeconds: throttle_seconds !== undefined ? throttle_seconds : (existing.throttleTimeSeconds ?? 60),
         queryTimestampType: query_timestamp_type || existing.queryTimestampType || 'IngestTimestamp',
         triggerMode: trigger_mode || existing.triggerMode || 'CompleteMode',
         enabled: enabled !== undefined ? enabled : existing.enabled,
         labels: labels || existing.labels || [],
         throttleFields: throttle_fields || existing.throttleFields || [],
-        ...(description !== undefined && { description }),
+        description: description !== undefined ? description : (existing.description || ''),
       },
     };
     resultPath = 'updateAggregateAlertV2';
@@ -2388,6 +2419,8 @@ async function handleUpdateAlert(args) {
         }
       }
     `;
+    const maxWait = max_wait_seconds !== undefined ? max_wait_seconds : existing.maxWaitTimeSeconds;
+    const backfill = backfill_limit !== undefined ? backfill_limit : existing.backfillLimitV2;
     variables = {
       input: {
         viewName: repo,
@@ -2395,17 +2428,17 @@ async function handleUpdateAlert(args) {
         name: new_name || existing.name,
         queryString: query_string || existing.queryString,
         actionIdsOrNames: resolvedActions || existingActions,
-        queryOwnershipType: query_ownership_type || 'Organization',
+        queryOwnershipType: query_ownership_type || existingOwnershipType(existing),
         queryTimestampType: query_timestamp_type || existing.queryTimestampType || 'IngestTimestamp',
         schedule: schedule || existing.schedule,
         timeZone: time_zone || existing.timeZone || 'UTC',
-        searchIntervalSeconds: search_interval_seconds || existing.searchIntervalSeconds,
+        searchIntervalSeconds: search_interval_seconds !== undefined ? search_interval_seconds : existing.searchIntervalSeconds,
         enabled: enabled !== undefined ? enabled : existing.enabled,
         triggerOnEmptyResult: trigger_on_empty !== undefined ? trigger_on_empty : (existing.triggerOnEmptyResult || false),
         labels: labels || existing.labels || [],
-        ...(description !== undefined && { description }),
-        ...(max_wait_seconds !== undefined && { maxWaitTimeSeconds: max_wait_seconds }),
-        ...(backfill_limit !== undefined && { backfillLimit: backfill_limit }),
+        description: description !== undefined ? description : (existing.description || ''),
+        ...(maxWait !== undefined && maxWait !== null && { maxWaitTimeSeconds: maxWait }),
+        ...(backfill !== undefined && backfill !== null && { backfillLimit: backfill }),
       },
     };
     resultPath = 'updateScheduledSearchV3';
@@ -2417,7 +2450,7 @@ async function handleUpdateAlert(args) {
   const data = await executeGraphQL(mutation, variables);
   const updated = data[resultPath];
 
-  const typeLabel = alertType === 'filter' ? 'Filter Alert' : alertType === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[alertType];
 
   return {
     content: [{
@@ -2472,7 +2505,7 @@ async function handleDeleteAlert(args) {
     input: { viewName: repo, id },
   });
 
-  const typeLabel = alertType === 'filter' ? 'Filter Alert' : alertType === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[alertType];
 
   return {
     content: [{ type: 'text', text: `✅ ${typeLabel} "${alert.name}" (${id}) deleted successfully from ${repo}.` }],
@@ -2519,7 +2552,7 @@ async function handleToggleAlert(args) {
     input: { viewName: repo, id },
   });
 
-  const typeLabel = alertType === 'filter' ? 'Filter Alert' : alertType === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[alertType];
 
   return {
     content: [{ type: 'text', text: `✅ ${typeLabel} "${alert.name}" ${action}d successfully.` }],
@@ -2710,55 +2743,37 @@ async function handleDeleteAction(args) {
     throw new Error('Either action_id or name is required');
   }
 
-  // Resolve action
-  const data = await executeGraphQL(`
-    query ListActions($repo: String!) {
-      searchDomain(name: $repo) {
-        ... on View { actions { id name __typename } }
-        ... on Repository { actions { id name __typename } }
+  // Resolve name to ID only when no ID was given — the type-agnostic
+  // deleteActionV2 mutation removes any action kind by ID.
+  let targetId = action_id;
+  let targetName = name;
+  if (!targetId) {
+    const data = await executeGraphQL(`
+      query ListActions($repo: String!) {
+        searchDomain(name: $repo) {
+          ... on View { actions { id name } }
+          ... on Repository { actions { id name } }
+        }
       }
+    `, { repo });
+
+    const allActions = data?.searchDomain?.actions || [];
+    const target = allActions.find(a => a.name.toLowerCase() === name.toLowerCase());
+    if (!target) {
+      throw new Error(`Action "${name}" not found in ${repo}. Available actions: ${allActions.map(a => a.name).join(', ')}`);
     }
-  `, { repo });
-
-  const allActions = data?.searchDomain?.actions || [];
-  const target = action_id
-    ? allActions.find(a => a.id === action_id)
-    : allActions.find(a => a.name.toLowerCase() === name.toLowerCase());
-
-  if (!target) {
-    throw new Error(`Action "${action_id || name}" not found in ${repo}`);
+    targetId = target.id;
+    targetName = target.name;
   }
 
-  // Determine delete mutation based on __typename
-  const typeName = target.__typename || '';
-  let deleteMutation;
-
-  if (typeName.includes('SlackPostMessage')) {
-    deleteMutation = `mutation { deleteSlackPostMessageAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('Slack')) {
-    deleteMutation = `mutation { deleteSlackAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('Email')) {
-    deleteMutation = `mutation { deleteEmailAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('Webhook')) {
-    deleteMutation = `mutation { deleteWebhookAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('PagerDuty')) {
-    deleteMutation = `mutation { deletePagerDutyAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('OpsGenie')) {
-    deleteMutation = `mutation { deleteOpsGenieAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('VictorOps')) {
-    deleteMutation = `mutation { deleteVictorOpsAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('HumioRepo')) {
-    deleteMutation = `mutation { deleteHumioRepoAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else if (typeName.includes('UploadFile')) {
-    deleteMutation = `mutation { deleteUploadFileAction(input: { viewName: "${repo}", id: "${target.id}" }) { id } }`;
-  } else {
-    throw new Error(`Cannot determine delete mutation for action type: ${typeName}`);
-  }
-
-  await executeGraphQL(deleteMutation);
+  await executeGraphQL(`
+    mutation DeleteAction($input: DeleteActionV2!) {
+      deleteActionV2(input: $input)
+    }
+  `, { input: { viewName: repo, id: targetId } });
 
   return {
-    content: [{ type: 'text', text: `✅ Action "${target.name}" (${target.id}) deleted successfully from ${repo}.` }],
+    content: [{ type: 'text', text: `✅ Action "${targetName || targetId}" (${targetId}) deleted successfully from ${repo}.` }],
   };
 }
 
@@ -2770,43 +2785,45 @@ async function handleExportAlert(args) {
     throw new Error('Either alert_id or name is required');
   }
 
-  // First resolve the alert to get its type and ID
-  const resolved = await resolveAlertId(repo, alert_id || name, type);
-  if (!resolved) {
-    throw new Error(`Alert "${alert_id || name}" not found in ${repo}`);
-  }
-
-  const { id, type: alertType } = resolved;
-
-  // Fetch the yamlTemplate for the specific alert type
-  let queryField;
-  if (alertType === 'filter') {
-    queryField = `filterAlerts { id name yamlTemplate }`;
-  } else if (alertType === 'aggregate') {
-    queryField = `aggregateAlerts { id name yamlTemplate }`;
-  } else if (alertType === 'scheduled') {
-    queryField = `scheduledSearches { id name yamlTemplate }`;
+  // Single fetch: pull id/name/yamlTemplate for the hinted type (or all types)
+  // and match locally — avoids resolving and then re-downloading the full list.
+  const typeFields = {
+    filter: 'filterAlerts { id name yamlTemplate }',
+    aggregate: 'aggregateAlerts { id name yamlTemplate }',
+    scheduled: 'scheduledSearches { id name yamlTemplate }',
+  };
+  const selected = type ? typeFields[type] : Object.values(typeFields).join('\n');
+  if (!selected) {
+    throw new Error(`Unknown alert type: ${type}. Use filter, aggregate, or scheduled.`);
   }
 
   const data = await executeGraphQL(`
     query ExportAlert($repo: String!) {
       searchDomain(name: $repo) {
-        ... on View { ${queryField} }
-        ... on Repository { ${queryField} }
+        ... on View { ${selected} }
+        ... on Repository { ${selected} }
       }
     }
   `, { repo });
 
   const domain = data?.searchDomain || {};
-  const alertList = domain.filterAlerts || domain.aggregateAlerts || domain.scheduledSearches || [];
-  const alert = alertList.find(a => a.id === id);
+  const candidates = [
+    ...(domain.filterAlerts || []).map(a => ({ ...a, _type: 'filter' })),
+    ...(domain.aggregateAlerts || []).map(a => ({ ...a, _type: 'aggregate' })),
+    ...(domain.scheduledSearches || []).map(a => ({ ...a, _type: 'scheduled' })),
+  ];
+  const ref = alert_id || name;
+  const alert = candidates.find(a => a.id === ref) || candidates.find(a => a.name === ref);
 
-  if (!alert || !alert.yamlTemplate) {
-    throw new Error(`Could not export YAML template for alert ${id}`);
+  if (!alert) {
+    throw new Error(`Alert "${ref}" not found in ${repo}`);
+  }
+  if (!alert.yamlTemplate) {
+    throw new Error(`Could not export YAML template for alert ${alert.id}`);
   }
 
   const yamlContent = alert.yamlTemplate;
-  const typeLabel = alertType === 'filter' ? 'Filter Alert' : alertType === 'aggregate' ? 'Aggregate Alert' : 'Scheduled Search';
+  const typeLabel = ALERT_TYPE_LABELS[alert._type];
 
   if (save_to_file) {
     const outPath = safePath(DASHBOARD_YAML_DIR, save_to_file);
@@ -2890,27 +2907,10 @@ async function handleGetFile(args) {
 
   log('debug', `Downloading lookup file: ${fileUrl}`);
 
-  const fileController = new AbortController();
-  const fileTimeout = setTimeout(() => fileController.abort(), FETCH_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(fileUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${API_TOKEN}`,
-        'Accept': 'text/csv, application/json, */*',
-      },
-      signal: fileController.signal,
-    });
-  } catch (err) {
-    clearTimeout(fileTimeout);
-    if (err.name === 'AbortError') {
-      throw new Error(`Request timed out downloading file "${filename}" from ${repo}`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(fileTimeout);
-  }
+  const response = await restFetch(fileUrl, {
+    headers: { 'Accept': 'text/csv, application/json, */*' },
+    timeoutLabel: `Downloading file "${filename}" from ${repo}`,
+  });
 
   if (!response.ok) {
     const errorText = sanitizeErrorText(await response.text());
@@ -2933,7 +2933,7 @@ async function handleGetFile(args) {
     };
   }
 
-  const headers = parseCSVLineUtil(lines[0]);
+  const headers = parseCSVLine(lines[0]);
   let dataLines = lines.slice(1);
 
   if (filter) {
@@ -2957,7 +2957,7 @@ async function handleGetFile(args) {
   text += `| ${headers.map(() => '---').join(' | ')} |\n`;
 
   for (const line of limitedRows) {
-    const values = parseCSVLineUtil(line);
+    const values = parseCSVLine(line);
     const paddedValues = headers.map((_, i) => (values[i] || '').replace(/\|/g, '\\|'));
     text += `| ${paddedValues.join(' | ')} |\n`;
   }
@@ -2987,30 +2987,17 @@ async function handleUploadFile(args) {
 
   log('debug', `Uploading lookup file: ${fileUrl}`);
 
-  const uploadResponse = await withRetry(async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    let response;
-    try {
-      response = await fetch(fileUrl, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${API_TOKEN}`,
-          'Content-Type': 'text/csv',
-        },
-        body: csvContent,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error(`Request timed out uploading file "${filename}" to ${repo}`);
-      throw err;
-    } finally {
-      clearTimeout(timeout);
-    }
+  // File upload is a full-content PUT, so retrying after a timeout is idempotent
+  await withRetry(async () => {
+    const response = await restFetch(fileUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/csv' },
+      body: csvContent,
+      timeoutLabel: `Uploading file "${filename}" to ${repo}`,
+    });
 
     if (!response.ok) {
-      const errorText = sanitizeErrorText(await response.text());
-      throw new Error(`Error uploading file "${filename}" to ${repo}: ${response.status} ${errorText}`);
+      throw httpError(`Error uploading file "${filename}" to ${repo}`, response.status, sanitizeErrorText(await response.text()));
     }
 
     return response;
@@ -3034,6 +3021,7 @@ async function handleUploadFile(args) {
 async function handleListRepos(args) {
   const data = await executeGraphQL(`{
     searchDomains {
+      __typename
       name
       description
       ... on Repository {
@@ -3052,15 +3040,19 @@ async function handleListRepos(args) {
   }
 
   let text = `# LogScale Repositories & Views\n\nFound ${domains.length} search domain(s):\n\n`;
-  text += `| Name | Description | Compressed Size | Uncompressed Size |\n`;
-  text += `| --- | --- | --- | --- |\n`;
+  text += `| Name | Type | Description | Compressed Size | Uncompressed Size |\n`;
+  text += `| --- | --- | --- | --- | --- |\n`;
 
   for (const d of domains) {
+    const type = d.__typename === 'View' ? 'View' : 'Repository';
     const desc = d.description || '-';
     const compressed = d.compressedByteSize ? formatBytes(d.compressedByteSize) : '-';
     const uncompressed = d.uncompressedByteSize ? formatBytes(d.uncompressedByteSize) : '-';
-    text += `| ${d.name} | ${desc} | ${compressed} | ${uncompressed} |\n`;
+    text += `| ${d.name} | ${type} | ${desc} | ${compressed} | ${uncompressed} |\n`;
   }
+
+  text += `\n> To query a **View**, pass its name in the \`repository\` parameter of logscale_query/logscale_search. `;
+  text += `Inside CQL, \`#repo=\` matches raw repository names only — \`#view=\` is not a valid tag and silently matches nothing.\n`;
 
   return { content: [{ type: 'text', text }] };
 }
@@ -3075,19 +3067,12 @@ async function handleStatus(args) {
 
   // Test REST API connectivity (lightweight check using status endpoint)
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const resp = await fetch(`${BASE_URL}/api/v1/status`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${API_TOKEN}`,
-      },
-      signal: controller.signal,
+    const resp = await restFetch(`${BASE_URL}/api/v1/status`, {
+      timeoutLabel: 'REST API status check',
     });
-    clearTimeout(timeout);
     text += `**REST API connectivity:** ${resp.ok ? '✅ OK' : `❌ ${resp.status}`}\n`;
   } catch (e) {
-    text += `**REST API connectivity:** ❌ ${e.name === 'AbortError' ? 'request timed out' : e.message}\n`;
+    text += `**REST API connectivity:** ❌ ${e.message}\n`;
   }
 
   // Test GraphQL API connectivity
@@ -3123,8 +3108,9 @@ async function handleDocsSync(args) {
     await mkdir(DASHBOARD_DOCS_DIR, { recursive: true });
   }
 
-  const results = [];
-  for (const source of sourcesToSync) {
+  // Any per-source failure (timeout, network, HTTP error) is recorded and the
+  // rest of the sync continues; sources download in parallel.
+  const syncSource = async (source) => {
     const targetDir = source.category === 'cql' ? CQL_DOCS_DIR : DASHBOARD_DOCS_DIR;
     const filePath = join(targetDir, source.filename);
     const markdownPath = join(targetDir, source.filename.replace(/\.html$/i, '.md'));
@@ -3136,49 +3122,39 @@ async function handleDocsSync(args) {
         || (normalizedFormat === 'both' && htmlCached && markdownCached));
 
     if (shouldSkip) {
-      results.push({ ...source, status: 'cached', path: filePath });
-      continue;
+      return { ...source, status: 'cached', path: filePath };
     }
 
     log('info', `📥 Downloading ${source.title}...`);
-    const docController = new AbortController();
-    const docTimeout = setTimeout(() => docController.abort(), FETCH_TIMEOUT_MS);
-    let response;
     try {
-      response = await fetch(source.url, {
-        headers: {
-          'User-Agent': 'logscale-mcp-server',
-        },
-        signal: docController.signal,
+      // token: null — these are external documentation sites; never send credentials
+      const response = await restFetch(source.url, {
+        headers: { 'User-Agent': 'logscale-mcp-server' },
+        token: null,
+        timeoutLabel: `Downloading ${source.url}`,
       });
-    } catch (err) {
-      clearTimeout(docTimeout);
-      if (err.name === 'AbortError') {
-        log('warn', `⚠️ Timeout downloading ${source.url}`);
-        results.push({ ...source, status: 'failed', error: 'timeout' });
-        continue;
+
+      if (!response.ok) {
+        log('warn', `⚠️ Failed to download ${source.url}: ${response.status}`);
+        return { ...source, status: 'failed', error: response.status };
       }
-      throw err;
-    } finally {
-      clearTimeout(docTimeout);
-    }
 
-    if (!response.ok) {
-      log('warn', `⚠️ Failed to download ${source.url}: ${response.status}`);
-      results.push({ ...source, status: 'failed', error: response.status });
-      continue;
+      const body = await response.text();
+      if (normalizedFormat !== 'markdown') {
+        await writeFile(filePath, body, 'utf8');
+      }
+      if (normalizedFormat !== 'html') {
+        const markdown = htmlToMarkdown(body);
+        await writeFile(markdownPath, markdown, 'utf8');
+      }
+      return { ...source, status: 'downloaded', path: filePath };
+    } catch (err) {
+      log('warn', `⚠️ Failed to download ${source.url}: ${err.message}`);
+      return { ...source, status: 'failed', error: err.message };
     }
+  };
 
-    const body = await response.text();
-    if (normalizedFormat !== 'markdown') {
-      await writeFile(filePath, body, 'utf8');
-    }
-    if (normalizedFormat !== 'html') {
-      const markdown = htmlToMarkdown(body);
-      await writeFile(markdownPath, markdown, 'utf8');
-    }
-    results.push({ ...source, status: 'downloaded', path: filePath });
-  }
+  const results = await Promise.all(sourcesToSync.map(syncSource));
 
   const successCount = results.filter(r => r.status === 'downloaded' || r.status === 'cached').length;
   const summary = results

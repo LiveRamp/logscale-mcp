@@ -11,6 +11,7 @@ import {
   htmlToMarkdown,
   validateRepoName,
   validateJobId,
+  assertNoViewTag,
   sanitizeErrorText,
   decodeHtmlEntities,
   stripTags,
@@ -184,6 +185,11 @@ describe('formatTimestamp', () => {
   it('returns original for invalid values', () => {
     assert.equal(formatTimestamp('not-a-number'), 'not-a-number');
   });
+
+  it('formats ISO 8601 strings instead of mangling them into 1970', () => {
+    assert.equal(formatTimestamp('2026-08-31T12:00:00Z'), '2026-08-31T12:00:00.000Z');
+    assert.equal(formatTimestamp('2026-08-31T12:00:00.500Z'), '2026-08-31T12:00:00.500Z');
+  });
 });
 
 // ============================================================================
@@ -284,6 +290,11 @@ describe('decodeHtmlEntities', () => {
 
   it('handles multiple entities', () => {
     assert.equal(decodeHtmlEntities('a &amp; b &lt; c'), 'a & b < c');
+  });
+
+  it('decodes &amp; last so escaped entities are not double-decoded', () => {
+    assert.equal(decodeHtmlEntities('&amp;lt;'), '&lt;');
+    assert.equal(decodeHtmlEntities('&amp;amp;'), '&amp;');
   });
 });
 
@@ -443,5 +454,27 @@ describe('sanitizeErrorText', () => {
   it('handles non-string input gracefully', () => {
     assert.equal(sanitizeErrorText(12345), '');
     assert.equal(sanitizeErrorText({}), '');
+  });
+});
+
+// ============================================================================
+// assertNoViewTag
+// ============================================================================
+describe('assertNoViewTag', () => {
+  it('rejects #view= with a corrective error', () => {
+    assert.throws(() => assertNoViewTag('#view=SOC | count()'), /#view is not a valid CQL tag/);
+    assert.throws(() => assertNoViewTag('#view=SOC | count()'), /repository/);
+  });
+
+  it('rejects case and whitespace variants', () => {
+    assert.throws(() => assertNoViewTag('#View = detections'), /#view is not a valid CQL tag/);
+    assert.throws(() => assertNoViewTag('#VIEW=SOC'), /#view is not a valid CQL tag/);
+    assert.throws(() => assertNoViewTag('foo | #view =bar'), /#view is not a valid CQL tag/);
+  });
+
+  it('allows #repo= and plain queries', () => {
+    assert.doesNotThrow(() => assertNoViewTag('#repo=okta_corp | count()'));
+    assert.doesNotThrow(() => assertNoViewTag('eventType="user.session.start"'));
+    assert.doesNotThrow(() => assertNoViewTag('field=view | groupBy(view)'));
   });
 });
